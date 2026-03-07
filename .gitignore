@@ -1,0 +1,50 @@
+# --- Python / Environment ---
+__pycache__/
+*.py[cod]
+*$py.class
+.venv/
+venv/
+env/
+.env
+.pytest_cache/
+.vscode/
+.idea/
+.DS_Store
+
+# --- Jupyter Notebook ---
+.ipynb_checkpoints
+
+# --- Data (Bắt buộc phải ignore vì dung lượng lớn) ---
+logs
+logs/*.*
+data/raw/
+data/processed/
+# Nếu bạn để dữ liệu trong thư mục khác, hãy add thêm ở đây
+classification_data/
+ePillID/
+
+# --- Model Weights & Outputs ---
+weights/*.pth
+weights/*.pt
+weights/*.h5
+weights/*.onnx
+# Ignore toàn bộ folder weights ngoại trừ file .gitkeep (nếu có)
+weights/
+!weights/.gitkeep
+
+# --- Results & Logs ---
+results/*.csv
+results/*.png
+results/*.pdf
+logs/
+experiments/
+
+# --- System / OS ---
+# Đặc biệt quan trọng khi bạn dùng MacBook
+.DS_Store
+.AppleDouble
+.LSOverride
+Icon
+._*
+.Spotlight-V100
+.Trashes
