@@ -22,7 +22,8 @@ from pytorch_metric_learning import losses, miners
 
 def train_one_fold(f_idx, num_classes, df_train, df_val, df_ref, device):
     # Cấu hình an toàn cho 10GB VRAM, size 224
-    n_classes = 8 
+    pooling_type='mpn-cov'
+    n_classes = 6 if pooling_type == 'mpn-cov' else 8
     n_samples = 4
     
     sampler = BalancedBatchSampler(df_train['label_idx'].values, n_classes=n_classes, n_samples=n_samples)
@@ -33,12 +34,20 @@ def train_one_fold(f_idx, num_classes, df_train, df_val, df_ref, device):
     val_loader = DataLoader(PillDataset(val_df, get_transforms(is_train=False, size=224)), 
                             batch_size=16, num_workers=2)
 
-    model = PillTeacher(num_classes=num_classes, backbone_type='resnet50').to(device)
+    model = PillTeacher(num_classes=num_classes, backbone_type='resnet50', pooling_type=pooling_type).to(device)
     
+    # optimizer = torch.optim.AdamW([
+    #     {'params': model.features.parameters(), 'lr': 2e-5, 'name': 'backbone'},
+    #     {'params': model.reduce_conv.parameters(), 'lr': 2e-4, 'name': 'head'},
+    #     {'params': model.fc_bilinear.parameters(), 'lr': 2e-4, 'name': 'head'},
+    #     {'params': model.fc_ce.parameters(), 'lr': 2e-4, 'name': 'head'},
+    #     {'params': [model.proxy_cos], 'lr': 2e-4, 'name': 'head'}
+    # ], weight_decay=1e-2)
+
     optimizer = torch.optim.AdamW([
         {'params': model.features.parameters(), 'lr': 2e-5, 'name': 'backbone'},
         {'params': model.reduce_conv.parameters(), 'lr': 2e-4, 'name': 'head'},
-        {'params': model.fc_bilinear.parameters(), 'lr': 2e-4, 'name': 'head'},
+        {'params': model.fc_projection.parameters(), 'lr': 2e-4, 'name': 'head'}, # Đổi từ fc_bilinear
         {'params': model.fc_ce.parameters(), 'lr': 2e-4, 'name': 'head'},
         {'params': [model.proxy_cos], 'lr': 2e-4, 'name': 'head'}
     ], weight_decay=1e-2)
