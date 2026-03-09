@@ -105,7 +105,7 @@ def train_one_fold(f_idx, num_classes, df_train, df_val, df_ref, device):
             if curr_map > best_val_map:
                 print(f"📊 Epoch {epoch} ==> BEST updated")
                 best_val_map = curr_map
-                torch.save(model.state_dict(), f'weights/teacher_benchmark_f{f_idx}.pth')
+                torch.save(model.state_dict(), f'weights/teacher_cv_f{f_idx}.pth')
                     
     return best_val_map
 
@@ -114,15 +114,38 @@ def main():
     gc.collect()
     device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
     os.makedirs('weights', exist_ok=True)
-    
+
+    # ... (khởi tạo thiết bị và load data)
     df_all = load_epill_full_data()
     num_classes = int(df_all['label_idx'].max() + 1)
     
-    df_ref = df_all[df_all['is_ref'] == 1].reset_index(drop=True)
-    df_train = df_all[df_all['fold'] != 0].reset_index(drop=True) # Ví dụ Fold 0
-    df_val = df_all[df_all['fold'] == 0].reset_index(drop=True)
+    # 1. Tách biệt tập Reference gốc (toàn bộ) để dùng làm Gallery khi Eval
+    df_ref_gallery = df_all[df_all['is_ref'] == 1].reset_index(drop=True)
     
-    train_one_fold(0, num_classes, df_train, df_val, df_ref, device)
+    # 2. Xác định các fold dùng cho Cross-Validation (0, 1, 2, 3)
+    # Loại bỏ Fold 4 (Hold-out) khỏi quá trình train/val này
+    cv_folds = [0, 1, 2, 3]
+    
+    for fold in cv_folds:
+        print(f"\n🚀 Training Fold {fold}...")
+        
+        # --- TẬP VAL ---
+        # Chỉ gồm ảnh Consumer của fold hiện tại
+        df_val = df_all[(df_all['fold'] == fold) & (df_all['is_ref'] == 0)].reset_index(drop=True)
+        
+        # --- TẬP TRAIN ---
+        # Điều kiện 1: Là ảnh Consumer của các fold CV khác (không phải fold hiện tại và không phải fold 4)
+        cond_cons = (df_all['fold'].isin(cv_folds)) & (df_all['fold'] != fold) & (df_all['is_ref'] == 0)
+        
+        # Điều kiện 2: Là ảnh Reference NHƯNG chỉ của những nhãn (labels) xuất hiện trong cond_cons
+        # Điều này đảm bảo mô hình không "nhìn trộm" mặt chuẩn của thuốc trong tập Val
+        train_labels = df_all[cond_cons]['label_idx'].unique()
+        cond_ref = (df_all['is_ref'] == 1) & (df_all['label_idx'].isin(train_labels))
+        
+        df_train = df_all[cond_cons | cond_ref].reset_index(drop=True)
+        
+        # Chạy huấn luyện
+        train_one_fold(fold, num_classes, df_train, df_val, df_ref_gallery, device)
 
 if __name__ == '__main__':
     main()
