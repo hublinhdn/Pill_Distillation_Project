@@ -73,7 +73,7 @@ class PillTeacher(nn.Module):
         if labels is not None:
             logits_sce = self.fc_ce(embedding)
             norm_proxy = F.normalize(self.proxy_cos, p=2, dim=1)
-            logits_csce = F.linear(norm_embedding, norm_proxy) * 16.0
+            logits_csce = F.linear(norm_embedding, norm_proxy) * 32.0
             return logits_sce, logits_csce, norm_embedding
         
         return norm_embedding
