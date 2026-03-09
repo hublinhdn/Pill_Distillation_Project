@@ -28,51 +28,50 @@ class MPNCOV(nn.Module):
         return out
 
 class PillTeacher(nn.Module):
-    def __init__(self, num_classes, embedding_size=512, backbone_type='resnet50'):
+    def __init__(self, num_classes, embedding_size=512):
         super(PillTeacher, self).__init__()
-        
-        # Load ResNet50 chuẩn
         base = models.resnet50(weights='ResNet50_Weights.IMAGENET1K_V2')
         
-        # CHIẾN LƯỢC UPSIZE NGẦM: 
-        # Chỉnh layer4 (khối cuối) để stride=1 thay vì stride=2
-        # Điều này giúp output feature map là 14x14 thay vì 7x7
+        # Upsize ngầm: Giữ Resolution layer 4 là 14x14
         base.layer4[0].conv2.stride = (1, 1)
         base.layer4[0].downsample[0].stride = (1, 1)
         
         self.features = nn.Sequential(*list(base.children())[:-2])
-        in_channels = 2048
-
-        # Bottleneck để giảm channel xuống 256 trước khi vào MPN-COV
+        
+        # Bottleneck giảm chiều channel trước MPN-COV
         self.reduce_conv = nn.Sequential(
-            nn.Conv2d(in_channels, 256, kernel_size=1),
+            nn.Conv2d(2048, 256, kernel_size=1, bias=False),
             nn.BatchNorm2d(256),
             nn.ReLU(inplace=True)
         )
         
         self.mpn_cov = MPNCOV(iterNum=3)
-        self.fc_projection = nn.Linear(256 * 256, embedding_size)
+        
+        # Benchmark thường dùng BN sau FC để ổn định vector embedding
+        self.fc_projection = nn.Linear(256 * 256, embedding_size, bias=False)
         self.bn_head = nn.BatchNorm1d(embedding_size)
-        self.dropout = nn.Dropout(p=0.5)
-
+        
+        # Classifier với Scale chuẩn benchmark
         self.fc_ce = nn.Linear(embedding_size, num_classes)
         self.proxy_cos = nn.Parameter(torch.randn(num_classes, embedding_size))
         nn.init.kaiming_normal_(self.proxy_cos)
 
     def forward(self, x, labels=None):
-        feat = self.features(x) # Output lúc này là [B, 2048, 14, 14]
-        feat = self.reduce_conv(feat) # [B, 256, 14, 14]
+        feat = self.features(x)
+        feat = self.reduce_conv(feat)
         
-        matrix_sqrt = self.mpn_cov(feat) # [B, 256, 256]
+        matrix_sqrt = self.mpn_cov(feat)
         flat_feat = matrix_sqrt.view(matrix_sqrt.size(0), -1)
-        flat_feat = F.normalize(flat_feat, p=2, dim=1)
         
-        embedding = self.bn_head(self.fc_projection(self.dropout(flat_feat)))
+        # L2 Normalize trước khi chiếu vào không gian embedding
+        flat_feat = F.normalize(flat_feat, p=2, dim=1)
+        embedding = self.bn_head(self.fc_projection(flat_feat))
         norm_embedding = F.normalize(embedding, p=2, dim=1)
         
         if labels is not None:
             logits_sce = self.fc_ce(embedding)
             norm_proxy = F.normalize(self.proxy_cos, p=2, dim=1)
+            # Scale 32-64 tùy theo độ khó của batch
             logits_csce = F.linear(norm_embedding, norm_proxy) * 32.0
             return logits_sce, logits_csce, norm_embedding
         

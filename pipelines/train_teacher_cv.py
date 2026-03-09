@@ -1,5 +1,4 @@
 import torch
-torch.multiprocessing.set_sharing_strategy('file_system')
 import torch.nn as nn
 import torch.nn.functional as F
 import pandas as pd
@@ -8,73 +7,68 @@ import sys
 import numpy as np
 import gc
 from torch.utils.data import DataLoader
-from torch.optim.lr_scheduler import CosineAnnealingLR
+from torch.optim.lr_scheduler import MultiStepLR
+from torchvision import transforms
 from tqdm import tqdm
 
 sys.path.append(os.path.abspath(os.path.join(os.path.dirname(__file__), '..')))
 
 from models.teacher_model import PillTeacher
-from utils.dataset_loader import PillDataset, get_transforms, BalancedBatchSampler
+from utils.dataset_loader import PillDataset, BalancedBatchSampler
 from utils.evaluator import evaluate_retrieval
 from utils.data_utils import load_epill_full_data
 from pytorch_metric_learning import losses, miners
 
 def train_one_fold(f_idx, num_classes, df_train, df_val, df_ref, device):
-    # Cấu hình Upsize ngầm & Mixed Precision
-    n_classes = 4 
-    n_samples = 4 
+    # Cấu hình chuẩn Benchmark cho 10GB VRAM
+    n_classes, n_samples = 4, 4 
     accumulation_steps = 2 
-    warmup_epochs = 5
-    patience = 20
     
-    sampler = BalancedBatchSampler(df_train['label_idx'].values, n_classes=n_classes, n_samples=n_samples)
-    train_loader = DataLoader(PillDataset(df_train, get_transforms(is_train=True, size=224)), 
-                              batch_sampler=sampler, num_workers=4, pin_memory=True)
-    val_loader = DataLoader(PillDataset(pd.concat([df_val, df_ref]), get_transforms(is_train=False, size=224)), 
+    # 1. Augmentation chuẩn Benchmark (ImageNet Style)
+    train_transform = transforms.Compose([
+        transforms.Resize(256),
+        transforms.RandomResizedCrop(224, scale=(0.8, 1.0)),
+        transforms.RandomHorizontalFlip(),
+        transforms.RandomRotation(15),
+        transforms.ColorJitter(0.2, 0.2),
+        transforms.ToTensor(),
+        transforms.Normalize(mean=[0.485, 0.456, 0.406], std=[0.229, 0.224, 0.225])
+    ])
+    
+    val_transform = transforms.Compose([
+        transforms.Resize(256),
+        transforms.CenterCrop(224),
+        transforms.ToTensor(),
+        transforms.Normalize(mean=[0.485, 0.456, 0.406], std=[0.229, 0.224, 0.225])
+    ])
+
+    train_loader = DataLoader(PillDataset(df_train, train_transform), 
+                              batch_sampler=BalancedBatchSampler(df_train['label_idx'].values, n_classes, n_samples),
+                              num_workers=4, pin_memory=True)
+    val_loader = DataLoader(PillDataset(pd.concat([df_val, df_ref]), val_transform), 
                             batch_size=32, shuffle=False, num_workers=4)
 
     model = PillTeacher(num_classes=num_classes).to(device)
+    optimizer = torch.optim.AdamW(model.parameters(), lr=2e-4, weight_decay=1e-2)
     
-    optimizer = torch.optim.AdamW([
-        {'params': model.features.parameters(), 'lr': 2e-5},
-        {'params': model.reduce_conv.parameters(), 'lr': 2e-4},
-        {'params': model.fc_projection.parameters(), 'lr': 2e-4},
-        {'params': model.fc_ce.parameters(), 'lr': 2e-4},
-        {'params': [model.proxy_cos], 'lr': 4e-4} # Tăng LR cho Proxy để hội tụ nhanh hơn
-    ], weight_decay=1e-2)
-
-    scheduler = CosineAnnealingLR(optimizer, T_max=100, eta_min=1e-6)
+    # Giảm LR mạnh tại các mốc cuối để ổn định hội tụ
+    scheduler = MultiStepLR(optimizer, milestones=[60, 85], gamma=0.1)
     scaler = torch.amp.GradScaler('cuda')
 
-    # Loss functions
-    loss_metric_func = losses.MultiSimilarityLoss(alpha=2, beta=50, base=0.5) # Thông số chuẩn SOTA
-    criterion_sce = nn.CrossEntropyLoss(label_smoothing=0.1) # Thêm Label Smoothing như benchmark
-    criterion_csce = nn.CrossEntropyLoss()
-
+    # 2. Mining Khắc nghiệt: Triplet Hardest
+    loss_metric_func = losses.TripletMarginLoss(margin=0.2)
+    miner_hard = miners.TripletMarginMiner(margin=0.2, type_of_triplets="hardest")
+    
+    criterion_sce = nn.CrossEntropyLoss(label_smoothing=0.1)
     best_val_map = 0.0
-    counter = 0
 
     for epoch in range(1, 101):
         model.train()
-        
-        # --- CHIẾN LƯỢC KHẮT KHE ---
-        # 1. Mining linh động: Càng về sau càng chọn mẫu khó hơn
-        if epoch < 40:
-            current_epsilon = 0.1
-        elif epoch < 70:
-            current_epsilon = 0.05
-        else:
-            current_epsilon = 0.02 # Cực kỳ khắt khe
-            
-        miner = miners.MultiSimilarityMiner(epsilon=current_epsilon)
-        
-        # 2. Trọng số Loss linh động
-        # Sau epoch 50, tăng mạnh Metric Loss và Proxy Loss
-        w_metric = 0.5 if epoch < 50 else 1.0
-        w_csce = 0.5 if epoch < 50 else 1.2 # Đẩy mạnh phân cực embedding
-        
         optimizer.zero_grad()
-        pbar = tqdm(train_loader, desc=f"Fold {f_idx} | Ep {epoch} [eps={current_epsilon}]")
+        pbar = tqdm(train_loader, desc=f"Fold {f_idx} | Ep {epoch}")
+        
+        # Tăng trọng số Metric Loss sau Epoch 50
+        w_metric = 1.0 if epoch > 50 else 0.5
         
         for i, (imgs, labels, _) in enumerate(pbar):
             imgs, labels = imgs.to(device), labels.to(device).long()
@@ -82,50 +76,36 @@ def train_one_fold(f_idx, num_classes, df_train, df_val, df_ref, device):
             with torch.amp.autocast('cuda'):
                 logits_sce, logits_csce, norm_emb = model(imgs, labels)
                 
-                # Metric Loss với Hard Negative Mining
-                indices_tuple = miner(norm_emb, labels)
+                # Khai thác những bộ ba (Triplets) khó nhất trong batch
+                indices_tuple = miner_hard(norm_emb, labels)
                 l_metric = loss_metric_func(norm_emb, labels, indices_tuple)
                 
-                # Classification Losses
                 l_sce = criterion_sce(logits_sce, labels)
-                l_csce = criterion_csce(logits_csce, labels)
+                l_csce = F.cross_entropy(logits_csce, labels)
                 
-                # Tổng hợp Loss theo trọng số chiến lược
-                total_loss = (l_sce + w_csce * l_csce + w_metric * l_metric) / accumulation_steps
+                loss = (l_sce + l_csce + w_metric * l_metric) / accumulation_steps
 
-            scaler.scale(total_loss).backward()
+            scaler.scale(loss).backward()
             
             if (i + 1) % accumulation_steps == 0:
                 scaler.step(optimizer)
                 scaler.update()
                 optimizer.zero_grad()
             
-            pbar.set_postfix({
-                'L': f"{total_loss.item()*accumulation_steps:.2f}",
-                'm_w': w_metric,
-                'Best': f"{best_val_map:.3f}"
-            })
+            pbar.set_postfix({'L': f"{loss.item()*2:.2f}", 'Best': f"{best_val_map:.3f}"})
 
-        if epoch > warmup_epochs:
-            scheduler.step()
+        scheduler.step()
 
-        # Đánh giá định kỳ hoặc ở cuối
         if (epoch % 5 == 0) or (epoch >= 80):
             torch.cuda.empty_cache()
-            gc.collect()
             metrics = evaluate_retrieval(model, val_loader, device)
             curr_map = metrics['mAP']
-            print(f"📊 Epoch {epoch} mAP: {curr_map:.4f} (Rank-1: {metrics.get('Rank-1', 0):.4f})")
+            print(f"📊 Epoch {epoch} mAP (Flip): {curr_map:.4f} (R1: {metrics['Rank-1']:.4f})")
 
             if curr_map > best_val_map:
+                print(f"📊 Epoch {epoch} ==> BEST updated")
                 best_val_map = curr_map
-                counter = 0
-                torch.save(model.state_dict(), f'weights/teacher_upsize_khat_khe_f{f_idx}.pth')
-            else:
-                counter += 1
-                if counter >= patience:
-                    print("Early stopping triggered.")
-                    break
+                torch.save(model.state_dict(), f'weights/teacher_benchmark_f{f_idx}.pth')
                     
     return best_val_map
 

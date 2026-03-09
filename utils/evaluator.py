@@ -3,24 +3,37 @@ import numpy as np
 from tqdm import tqdm
 
 def evaluate_retrieval(model, dataloader, device):
+    """
+    Đánh giá mô hình theo tiêu chuẩn Max-Matching + Flip-Augmentation.
+    Trích xuất vector đặc trưng của ảnh gốc và ảnh lật ngang, sau đó cộng trung bình.
+    """
     model.eval()
     all_embs = []
     all_labels = []
     all_is_refs = []
 
     with torch.no_grad():
-        for imgs, labels, is_refs in tqdm(dataloader, desc="Eval High-Res", leave=False):
+        for imgs, labels, is_refs in tqdm(dataloader, desc="Eval (Flip-Match)", leave=False):
             imgs = imgs.to(device)
-            # Dùng autocast để tiết kiệm VRAM khi eval
-            with torch.cuda.amp.autocast():
-                outputs = model(imgs)
-                emb = outputs[-1] if isinstance(outputs, tuple) else outputs
             
-            all_embs.append(emb.cpu().half()) # Lưu float16 để tiết kiệm RAM
+            # 1. Trích xuất ảnh gốc
+            with torch.amp.autocast('cuda'):
+                out_orig = model(imgs)
+                emb_orig = out_orig[-1] if isinstance(out_orig, tuple) else out_orig
+                
+                # 2. Trích xuất ảnh lật ngang (Horizontal Flip)
+                out_flip = model(torch.flip(imgs, dims=[3]))
+                emb_flip = out_flip[-1] if isinstance(out_flip, tuple) else out_flip
+                
+                # Trung bình cộng và chuẩn hóa lại L2
+                emb_final = (emb_orig + emb_flip) / 2.0
+                emb_final = torch.nn.functional.normalize(emb_final, p=2, dim=1)
+            
+            all_embs.append(emb_final.cpu().half())
             all_labels.append(labels)
             all_is_refs.append(is_refs)
 
-    all_embs = torch.cat(all_embs).float() # Chuyển lại float32 để tính toán similarity
+    all_embs = torch.cat(all_embs).float()
     all_labels = torch.cat(all_labels).numpy()
     all_is_refs = torch.cat(all_is_refs).numpy()
 
@@ -43,9 +56,10 @@ def evaluate_retrieval(model, dataloader, device):
     for i in range(len(q_labels)):
         scores = max_sims[i].numpy()
         sorted_labels = unique_g_labels[np.argsort(scores)[::-1]]
+        if sorted_labels[0] == q_labels[i]: rank1_correct += 1
+        
         binary_hits = (sorted_labels == q_labels[i]).astype(int)
-        if binary_hits[0] == 1: rank1_correct += 1
-        relevant_ranks = np.where(binary_hits == 1)[0] + 1
-        aps.append(1.0 / relevant_ranks[0])
+        relevant_rank = np.where(binary_hits == 1)[0] + 1
+        aps.append(1.0 / relevant_rank[0])
 
     return {'mAP': np.mean(aps), 'Rank-1': rank1_correct / len(q_labels)}
