@@ -43,3 +43,10 @@ tmux new -s eval_teacher -d "bash -lc '
 python pipelines/eval_teacher.py \
 |& tee -a logs/eval_teacher_$(date +%F_%H%M%S).log
 '"
+
+## RUN AUTO 
+chmod +x run_benchmark.sh
+./run_benchmark.sh restnet50
+./run_benchmark.sh convnext_base
+
+python pipelines/train_teacher_cv.py --backbone convnext_base --fold 0 --epochs 100

@@ -2,64 +2,59 @@ import torch
 import numpy as np
 from tqdm import tqdm
 
-def evaluate_retrieval(model, dataloader, device):
-    """
-    Đánh giá mô hình theo tiêu chuẩn Max-Matching + Flip-Augmentation.
-    Trích xuất vector đặc trưng của ảnh gốc và ảnh lật ngang, sau đó cộng trung bình.
-    """
+def evaluate_retrieval(model, query_loader, gallery_loader, device):
     model.eval()
-    all_embs = []
-    all_labels = []
-    all_is_refs = []
-
-    with torch.no_grad():
-        for imgs, labels, is_refs in tqdm(dataloader, desc="Eval (Flip-Match)", leave=False):
-            imgs = imgs.to(device)
-            
-            # 1. Trích xuất ảnh gốc
-            with torch.amp.autocast('cuda'):
-                out_orig = model(imgs)
-                emb_orig = out_orig[-1] if isinstance(out_orig, tuple) else out_orig
-                
-                # 2. Trích xuất ảnh lật ngang (Horizontal Flip)
-                out_flip = model(torch.flip(imgs, dims=[3]))
-                emb_flip = out_flip[-1] if isinstance(out_flip, tuple) else out_flip
-                
-                # Trung bình cộng và chuẩn hóa lại L2
-                emb_final = (emb_orig + emb_flip) / 2.0
-                emb_final = torch.nn.functional.normalize(emb_final, p=2, dim=1)
-            
-            all_embs.append(emb_final.cpu().half())
-            all_labels.append(labels)
-            all_is_refs.append(is_refs)
-
-    all_embs = torch.cat(all_embs).float()
-    all_labels = torch.cat(all_labels).numpy()
-    all_is_refs = torch.cat(all_is_refs).numpy()
-
-    q_indices = np.where(all_is_refs == 0)[0]
-    g_indices = np.where(all_is_refs == 1)[0]
-    q_embs, q_labels = all_embs[q_indices], all_labels[q_indices]
-    g_embs, g_labels = all_embs[g_indices], all_labels[g_indices]
-
-    unique_g_labels = np.unique(g_labels)
-    gallery_by_label = {l: g_embs[g_labels == l] for l in unique_g_labels}
     
+    def extract(loader, desc):
+        all_embs, all_labels = [], []
+        with torch.no_grad():
+            for imgs, labels, _ in tqdm(loader, desc=desc, leave=False):
+                imgs = imgs.to(device)
+                with torch.amp.autocast('cuda'):
+                    # Lấy output cuối cùng (norm_embedding)
+                    out = model(imgs)
+                    emb = out[0] if isinstance(out, tuple) else out
+                    
+                    # Flip Augmentation trong lúc Eval (Chiến lược ép mAP)
+                    out_f = model(torch.flip(imgs, dims=[3]))
+                    emb_f = out_f[0] if isinstance(out_f, tuple) else out_f
+                    
+                    emb_final = torch.nn.functional.normalize((emb + emb_f) / 2.0, p=2, dim=1)
+                
+                all_embs.append(emb_final.cpu())
+                all_labels.append(labels)
+        return torch.cat(all_embs), torch.cat(all_labels)
+
+    # Trích xuất đặc trưng Query và Gallery riêng biệt
+    q_embs, q_labels = extract(query_loader, "Extract Query")
+    g_embs, g_labels = extract(gallery_loader, "Extract Gallery")
+
+    # Tính ma trận tương đồng Cosine
+    sim_matrix = torch.mm(q_embs, g_embs.t())
+    
+    # Tính mAP và Rank-1 (Dựa trên logic metrics.py của bạn)
+    unique_g_labels = torch.unique(g_labels)
+    # Max-matching logic
     max_sims = torch.zeros((len(q_labels), len(unique_g_labels)))
-    for j, label in enumerate(unique_g_labels):
-        label_embs = gallery_by_label[label]
-        sim_matrix = torch.mm(q_embs, label_embs.t())
-        max_sims[:, j] = torch.max(sim_matrix, dim=1)[0]
+    for j, lb in enumerate(unique_g_labels):
+        mask = (g_labels == lb)
+        max_sims[:, j] = torch.max(sim_matrix[:, mask], dim=1)[0]
 
+    # Tính toán mAP dựa trên max_sims
+    indices = torch.argsort(max_sims, dim=1, descending=True)
+    matched_labels = unique_g_labels[indices]
+    correct_mask = (matched_labels == q_labels.view(-1, 1))
+    
+    # Rank-1
+    rank1 = torch.mean(correct_mask[:, 0].float()).item()
+    
+    # mAP
     aps = []
-    rank1_correct = 0
     for i in range(len(q_labels)):
-        scores = max_sims[i].numpy()
-        sorted_labels = unique_g_labels[np.argsort(scores)[::-1]]
-        if sorted_labels[0] == q_labels[i]: rank1_correct += 1
-        
-        binary_hits = (sorted_labels == q_labels[i]).astype(int)
-        relevant_rank = np.where(binary_hits == 1)[0] + 1
-        aps.append(1.0 / relevant_rank[0])
-
-    return {'mAP': np.mean(aps), 'Rank-1': rank1_correct / len(q_labels)}
+        pos = torch.where(correct_mask[i])[0] + 1
+        if len(pos) > 0:
+            aps.append(1.0 / pos[0].item())
+        else:
+            aps.append(0.0)
+            
+    return {'mAP': np.mean(aps), 'Rank-1': rank1}

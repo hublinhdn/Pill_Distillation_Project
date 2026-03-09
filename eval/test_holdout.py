@@ -4,8 +4,8 @@ import torch.nn.functional as F
 import pandas as pd
 import numpy as np
 import os, sys
-import matplotlib.pyplot as plt
-from PIL import Image
+import argparse
+import glob
 from torch.utils.data import DataLoader
 from torchvision import transforms
 from tqdm import tqdm
@@ -14,128 +14,129 @@ sys.path.append(os.path.abspath(os.path.join(os.path.dirname(__file__), '..')))
 from models.teacher_model import PillTeacher
 from utils.dataset_loader import PillDataset
 from utils.data_utils import load_epill_full_data
+from utils.metrics import calculate_cosine_similarity, evaluate_retrieval_metrics
 
-def get_ensemble_embeddings(models, dataloader, device):
-    """Trích xuất đặc trưng kết hợp Ensemble 4-fold và Flip-Matching"""
-    for m in models: m.eval()
-    all_embs, all_labels, all_is_refs, all_instances = [], [], [], []
-
+def extract_ensemble_features(models, dataloader, device):
+    """
+    Trích xuất đặc trưng kết hợp:
+    1. Ensemble: Trung bình cộng embedding từ N models (4 folds).
+    2. Test-time Augmentation (TTA): Trung bình cộng ảnh gốc và ảnh lật.
+    """
+    for m in models:
+        m.eval()
+    
+    all_embs, all_labels, all_instances = [], [], []
+    
     with torch.no_grad():
-        for imgs, labels, is_refs, instance_ids in tqdm(dataloader, desc="🚀 Trích xuất đặc trưng"):
+        for imgs, labels, _, instance_ids in tqdm(dataloader, desc="🚀 Ensemble Extraction"):
             imgs = imgs.to(device)
             imgs_flip = torch.flip(imgs, dims=[3])
             
-            batch_embs = []
-            for model in models:
-                with torch.amp.autocast('cuda'):
-                    e_orig = model(imgs)
-                    if isinstance(e_orig, tuple): e_orig = e_orig[-1]
-                    e_flip = model(imgs_flip)
-                    if isinstance(e_flip, tuple): e_flip = e_flip[-1]
-                    batch_embs.append((e_orig + e_flip) / 2.0)
+            # Danh sách chứa embedding của từng model trong ensemble
+            model_outputs = []
             
-            ensemble_emb = torch.stack(batch_embs).mean(dim=0)
-            ensemble_emb = F.normalize(ensemble_emb, p=2, dim=1)
+            for model in models:
+                with torch.cuda.amp.autocast():
+                    # TTA cho từng model
+                    e_orig = model(imgs)["embedding"]
+                    e_flip = model(imgs_flip)["embedding"]
+                    avg_tta = (e_orig + e_flip) / 2.0
+                    model_outputs.append(avg_tta)
+            
+            # Trung bình cộng embedding của tất cả models trong ensemble
+            ensemble_emb = torch.stack(model_outputs).mean(dim=0)
+            ensemble_emb = F.normalize(ensemble_emb, p=2, dim=1) # Chuẩn hóa lại sau khi cộng
             
             all_embs.append(ensemble_emb.cpu())
             all_labels.append(labels)
-            all_is_refs.append(is_refs)
             all_instances.append(instance_ids)
+            
+    return torch.cat(all_embs), torch.cat(all_labels), torch.cat(all_instances)
 
-    return torch.cat(all_embs), torch.cat(all_labels).numpy(), \
-           torch.cat(all_is_refs).numpy(), torch.cat(all_instances).numpy()
-
-def compute_metrics(sim_matrix, query_labels, gallery_labels):
-    """Hàm lõi tính mAP và Rank-1"""
-    aps = []
-    rank1 = 0
-    for i in range(len(query_labels)):
-        scores = sim_matrix[i]
-        sorted_indices = np.argsort(scores)[::-1]
-        sorted_labels = gallery_labels[sorted_indices]
-        
-        if sorted_labels[0] == query_labels[i]:
-            rank1 += 1
-        
-        hit_rank = np.where(sorted_labels == query_labels[i])[0][0] + 1
-        aps.append(1.0 / hit_rank)
-    
-    return np.mean(aps), rank1 / len(query_labels)
-
-def main():
-    device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
+def main(args):
+    device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
     df_all = load_epill_full_data()
     num_classes = int(df_all['label_idx'].max() + 1)
 
-    # 1. Chuẩn bị tập Hold-out (Fold 4)
-    # Lấy thêm cột pill_instance_id để phục vụ Both-side
+    # 1. Tự động tìm tất cả các file weights của backbone tương ứng
+    # TỰ ĐỘNG QUÉT: Tìm trong weights/{backbone}/fold*_best.pth
+    weight_pattern = os.path.join("weights", args.backbone, "fold*_best.pth")
+    weight_files = sorted(glob.glob(weight_pattern))
+    
+    if not weight_files:
+        print(f"❌ Không tìm thấy trọng số tại: {weight_pattern}")
+        return
+
+    print(f"📦 Đang Ensemble {len(weight_files)} mô hình từ thư mục weights/{args.backbone}/")
+
+
+    # 2. Load tất cả models vào list
+    models_list = []
+    for wf in weight_files:
+        model = PillTeacher(backbone_name=args.backbone, num_classes=num_classes).to(device)
+        model.load_state_dict(torch.load(wf, map_location=device))
+        models_list.append(model)
+
+    # 3. Chuẩn bị Data
+    img_size = 300 if 'efficientnet' in args.backbone else 224
+    test_transform = transforms.Compose([
+        transforms.Resize((img_size, img_size)),
+        transforms.ToTensor(),
+        transforms.Normalize(mean=[0.485, 0.456, 0.406], std=[0.229, 0.224, 0.225])
+    ])
+    
     df_query = df_all[(df_all['fold'] == 4) & (df_all['is_ref'] == 0)].reset_index(drop=True)
     df_gallery = df_all[df_all['is_ref'] == 1].reset_index(drop=True)
-    test_df = pd.concat([df_query, df_gallery]).reset_index(drop=True)
     
-    # Custom Dataset cần trả về thêm instance_id (giả định bạn đã update Dataset)
-    # Nếu chưa update PillDataset, bạn có thể map instance_id thủ công sau.
-    test_loader = DataLoader(PillDataset(test_df, transforms.Compose([
-        transforms.Resize(256), transforms.CenterCrop(224), transforms.ToTensor(),
-        transforms.Normalize([0.485, 0.456, 0.406], [0.229, 0.224, 0.225])
-    ])), batch_size=16, shuffle=False)
+    query_loader = DataLoader(PillDataset(df_query, transform=test_transform), batch_size=16, shuffle=False)
+    gallery_loader = DataLoader(PillDataset(df_gallery, transform=test_transform), batch_size=16, shuffle=False)
 
-    # 2. Load Models
-    models = []
-    for i in range(4):
-        path = f'weights/teacher_cv_f{i}.pth'
-        if os.path.exists(path):
-            m = PillTeacher(num_classes=num_classes).to(device)
-            m.load_state_dict(torch.load(path, map_location=device))
-            models.append(m)
-
-    # 3. Trích xuất (Kết quả thô cho từng ảnh)
-    embs, labels, is_refs, instance_ids = get_ensemble_embeddings(models, test_loader, device)
+    # 4. Trích xuất đặc trưng Ensemble
+    print("\n--- Trích xuất tập Query (Hold-out) ---")
+    q_embs, q_labels, q_instances = extract_ensemble_features(models_list, query_loader, device)
     
-    q_embs, q_labels, q_instances = embs[is_refs==0], labels[is_refs==0], instance_ids[is_refs==0]
-    g_embs, g_labels = embs[is_refs==1], labels[is_refs==1]
-    unique_g_labels = np.unique(g_labels)
+    print("\n--- Trích xuất tập Gallery (Reference) ---")
+    # Gallery thường chỉ dùng 1 model mạnh nhất hoặc ensemble tùy bạn, ở đây dùng ensemble cho đồng bộ
+    g_embs, g_labels, _ = extract_ensemble_features(models_list, gallery_loader, device)
 
-    # 4. Tính Raw Similarity (Query Images vs Gallery Labels)
-    raw_sims = torch.zeros((len(q_embs), len(unique_g_labels)))
-    for j, label in enumerate(tqdm(unique_g_labels, desc="🔍 So khớp Gallery")):
-        label_embs = g_embs[g_labels == label]
-        sims = torch.mm(q_embs, label_embs.t())
-        raw_sims[:, j] = torch.max(sims, dim=1)[0]
+    # 5. Tính toán Similarity & Max-Matching
+    unique_g_labels = torch.unique(g_labels)
+    sim_matrix = calculate_cosine_similarity(q_embs, g_embs)
+    
+    # Rút gọn ma trận về (Query x Unique_Labels) bằng Max-matching
+    max_sims = torch.zeros((len(q_labels), len(unique_g_labels)))
+    for i, lb in enumerate(tqdm(unique_g_labels, desc="📊 Max-Matching")):
+        mask = (g_labels == lb)
+        max_sims[:, i] = torch.max(sim_matrix[:, mask], dim=1)[0]
 
-    # ==========================================
-    # PHẦN BÁO CÁO SO SÁNH
-    # ==========================================
+    # 6. Đánh giá
+    # A. Single-side
+    res_s = evaluate_retrieval_metrics(max_sims, q_labels, unique_g_labels)
     
-    # A. SINGLE-SIDE EVALUATION
-    mAP_s, r1_s = compute_metrics(raw_sims.numpy(), q_labels, unique_g_labels)
-    
-    # B. BOTH-SIDE EVALUATION (Grouping by Instance)
-    unique_pills = np.unique(q_instances)
+    # B. Both-side (Gộp theo Instance viên thuốc)
+    unique_pills = torch.unique(q_instances)
     both_sims, both_labels = [], []
     for p_id in unique_pills:
-        idx = np.where(q_instances == p_id)[0]
-        # Max-Fusion giữa các mặt của cùng 1 viên thuốc
-        both_sims.append(torch.max(raw_sims[idx], dim=0)[0])
-        both_labels.append(q_labels[idx[0]])
+        idx = (q_instances == p_id)
+        both_sims.append(torch.max(max_sims[idx], dim=0)[0])
+        both_labels.append(q_labels[idx][0])
     
-    mAP_b, r1_b = compute_metrics(torch.stack(both_sims).numpy(), np.array(both_labels), unique_g_labels)
+    res_b = evaluate_retrieval_metrics(torch.stack(both_sims), torch.tensor(both_labels), unique_g_labels)
 
-    print("\n" + "="*45)
-    print(f"{'Hạng mục':<20} | {'Single-side':<12} | {'Both-side':<12}")
-    print("-" * 45)
-    print(f"{'mAP':<20} | {mAP_s:<12.4f} | {mAP_b:<12.4f}")
-    print(f"{'Rank-1 Accuracy':<20} | {r1_s:<12.4f} | {r1_b:<12.4f}")
-    print(f"{'Số lượng mẫu':<20} | {len(q_labels):<12} | {len(unique_pills):<12}")
-    print("="*45)
-    
-    # Lưu kết quả ra file csv phục vụ viết báo cáo
-    report = pd.DataFrame({
-        'Metric': ['mAP', 'Rank-1', 'Samples'],
-        'Single-side': [mAP_s, r1_s, len(q_labels)],
-        'Both-side': [mAP_b, r1_b, len(unique_pills)]
-    })
-    report.to_csv('analysis/final_benchmark_comparison.csv', index=False)
+    # 7. Xuất kết quả
+    print("\n" + "⭐" * 30)
+    print(f" KẾT QUẢ FINAL ENSEMBLE ({len(models_list)} FOLDS)")
+    print(f" Backbone: {args.backbone.upper()}")
+    print("⭐" * 30)
+    print(f"{'Metric':<15} | {'Single-side':<15} | {'Both-side (MAX)':<15}")
+    print("-" * 50)
+    for m in ['mAP', 'Rank-1', 'Rank-5']:
+        print(f"{m:<15} | {res_s[m]:<15.4f} | {res_b[m]:<15.4f}")
+    print("="*50)
 
 if __name__ == '__main__':
-    main()
+    parser = argparse.ArgumentParser()
+    parser.add_argument('--backbone', type=str, required=True, help="resnet50, convnext_base, hoặc efficientnet_v2_s")
+    parser.add_argument('--weights_dir', type=str, default='weights/', help="Thư mục chứa các file .pth")
+    args = parser.parse_args()
+    main(args)
