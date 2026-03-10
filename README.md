@@ -19,7 +19,7 @@ Dự án nghiên cứu về nhận diện thuốc qua ảnh chụp thực tế b
 
 tmux new -s train_teacher_cv -d "bash -lc '
 python pipelines/train_teacher_cv.py \
-|& tee -a logs/train_teacher_cv_$(date +%F_%H%M%S).log
+|& tee -a logs/multi/train_teacher_cv_$(date +%F_%H%M%S).log
 '"
 
 

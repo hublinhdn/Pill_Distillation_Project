@@ -1,6 +1,7 @@
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
+import argparse
 import pandas as pd
 import os
 import sys
@@ -19,7 +20,7 @@ from utils.evaluator import evaluate_retrieval
 from utils.data_utils import load_epill_full_data
 from pytorch_metric_learning import losses, miners
 
-def train_one_fold(f_idx, num_classes, df_train, df_val, df_ref, device):
+def train_one_fold(args, f_idx, num_classes, df_train, df_val, df_ref, device):
     # Cấu hình chuẩn Benchmark cho 10GB VRAM
     n_classes, n_samples = 4, 4 
     accumulation_steps = 2 
@@ -47,11 +48,9 @@ def train_one_fold(f_idx, num_classes, df_train, df_val, df_ref, device):
                               num_workers=4, pin_memory=True)
     val_loader = DataLoader(PillDataset(pd.concat([df_val, df_ref]), val_transform), 
                             batch_size=32, shuffle=False, num_workers=4)
-
-    model = PillTeacher(num_classes=num_classes).to(device)
-    optimizer = torch.optim.AdamW(model.parameters(), lr=2e-4, weight_decay=1e-2)
     
-    # Giảm LR mạnh tại các mốc cuối để ổn định hội tụ
+    model = PillTeacher(num_classes=num_classes, backbone_type=args.backbone).to(device)
+    optimizer = torch.optim.AdamW(model.parameters(), lr=2e-4, weight_decay=1e-2)
     scheduler = MultiStepLR(optimizer, milestones=[60, 85], gamma=0.1)
     scaler = torch.amp.GradScaler('cuda')
 
@@ -64,7 +63,8 @@ def train_one_fold(f_idx, num_classes, df_train, df_val, df_ref, device):
 
     for epoch in range(1, 101):
         model.train()
-        optimizer.zero_grad()
+        pbar = tqdm(train_loader, desc=f"Fold {f_idx} | {args.backbone} | Ep {epoch}")
+        # optimizer.zero_grad()
         pbar = tqdm(train_loader, desc=f"Fold {f_idx} | Ep {epoch}")
         
         # Tăng trọng số Metric Loss sau Epoch 50
@@ -110,6 +110,10 @@ def train_one_fold(f_idx, num_classes, df_train, df_val, df_ref, device):
     return best_val_map
 
 def main():
+    parser = argparse.ArgumentParser()
+    parser.add_argument('--backbone', type=str, default='resnet101', choices=['resnet50', 'resnet101', 'convnext_base'])
+    args = parser.parse_args()
+
     torch.cuda.empty_cache()
     gc.collect()
     device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
@@ -125,6 +129,9 @@ def main():
     # 2. Xác định các fold dùng cho Cross-Validation (0, 1, 2, 3)
     # Loại bỏ Fold 4 (Hold-out) khỏi quá trình train/val này
     cv_folds = [0, 1, 2, 3]
+
+    # --- BIẾN LƯU TRỮ REPORT ---
+    results_summary = []
     
     for fold in cv_folds:
         print(f"\n🚀 Training Fold {fold}...")
@@ -145,7 +152,34 @@ def main():
         df_train = df_all[cond_cons | cond_ref].reset_index(drop=True)
         
         # Chạy huấn luyện
-        train_one_fold(fold, num_classes, df_train, df_val, df_ref_gallery, device)
+        best_map = train_one_fold(args, fold, num_classes, df_train, df_val, df_ref_gallery, device)
+        # Lưu lại kết quả của fold vào danh sách
+        results_summary.append({
+            'fold': fold,
+            'best_mAP': best_map
+        })
+        print(f"✅ Fold {fold} Finished. Best mAP: {best_map:.4f}")
+    # --- TỔNG HỢP VÀ XUẤT REPORT ---
+    report_path = f"reports/final_report_{args.backbone}.txt"
+    with open(report_path, "w", encoding="utf-8") as f:
+        f.write(f"PILL IDENTIFICATION REPORT - BACKBONE: {args.backbone}\n")
+        f.write("="*50 + "\n")
+        
+        all_maps = [res['best_mAP'] for res in results_summary]
+        for res in results_summary:
+            line = f"Fold {res['fold']}: Best mAP = {res['best_mAP']:.4f}\n"
+            f.write(line)
+            print(line, end="") # In ra màn hình luôn
+            
+        mean_map = np.mean(all_maps)
+        std_map = np.std(all_maps)
+        
+        summary_line = f"\nAVERAGE mAP: {mean_map:.4f} (+/- {std_map:.4f})\n"
+        f.write("-" * 20 + summary_line)
+        f.write("="*50 + "\n")
+        print(summary_line)
+
+    print(f"📝 Report đã được lưu tại: {report_path}")
 
 if __name__ == '__main__':
     main()
