@@ -1,7 +1,7 @@
 #!/bin/bash
 
 # --- CẤU HÌNH DANH SÁCH BACKBONE ---
-BACKBONES=("resnet50" "convnext_base" "efficientnet_v2_s")
+BACKBONES=("resnet50" "convnext_base" "efficientnet")
 
 DATE_STR=$(date +%d%m_%H%M)
 LOG_BASE_DIR="logs/comparison_${DATE_STR}"
@@ -22,7 +22,7 @@ for BACKBONE in "${BACKBONES[@]}"; do
     echo "🟡 Đang nạp lệnh cho $BACKBONE..."
     
     # Định nghĩa lệnh chạy
-    CMD="python pipelines/train_teacher_cv.py --backbone $BACKBONE --fold 0 --epochs 50 2>&1 | tee $LOG_BASE_DIR/${BACKBONE}_fold0.txt"
+    CMD="python pipelines/train_teacher_cv.py --backbone $BACKBONE --fold 0 --epochs 100 2>&1 | tee $LOG_BASE_DIR/${BACKBONE}_fold0.txt"
     
     # Gửi từng phần để tránh lỗi command
     tmux send-keys -t "$SESSION_NAME" "echo '----------------------------------------'" Enter

@@ -4,8 +4,7 @@ import torch.nn.functional as F
 from torchvision import models
 
 class MPNCOV(nn.Module):
-    """Lớp tính toán ma trận hiệp phương sai để bắt đặc trưng Fine-grained"""
-    def __init__(self, iterNum=5): # Ép lên 5 để ma trận hội tụ sâu hơn
+    def __init__(self, iterNum=5): 
         super(MPNCOV, self).__init__()
         self.iterNum = iterNum
 
@@ -13,13 +12,9 @@ class MPNCOV(nn.Module):
         batchSize, channels, h, w = x.data.shape
         M = h * w
         x = x.view(batchSize, channels, M)
-        
-        # Centralization
         I_hat = (-1.0/M) * torch.ones(M, M, device=x.device) + torch.eye(M, M, device=x.device)
         I_hat = I_hat.view(1, M, M).repeat(batchSize, 1, 1)
         y = x.bmm(I_hat).bmm(x.transpose(1, 2)) / M
-        
-        # Matrix Square Root via Newton Iteration
         trY = y.diagonal(dim1=-2, dim2=-1).sum(1)
         y = y / trY.view(batchSize, 1, 1)
         I = torch.eye(channels, channels, device=x.device).view(1, channels, channels).repeat(batchSize, 1, 1)
@@ -28,14 +23,13 @@ class MPNCOV(nn.Module):
             ZY = Z.bmm(Y)
             Y = 0.5 * Y.bmm(3.0 * I - ZY)
             Z = 0.5 * (3.0 * I - ZY).bmm(Z)
-        
         return Y * torch.sqrt(trY).view(batchSize, 1, 1)
 
 class PillTeacher(nn.Module):
     def __init__(self, backbone_name='resnet50', num_classes=4902, embedding_size=1024):
         super(PillTeacher, self).__init__()
         
-        # 1. Backbone
+        # 1. Backbone Selection
         if 'resnet50' in backbone_name:
             base = models.resnet50(weights='IMAGENET1K_V1')
             self.features = nn.Sequential(*list(base.children())[:-2])
@@ -44,51 +38,42 @@ class PillTeacher(nn.Module):
             base = models.convnext_base(weights='IMAGENET1K_V1')
             self.features = base.features
             in_channels = 1024
-        
-        # 2. Reduce Channels & MPN-COV
-        # Ép channels về 256 để MPN-COV không quá nặng (256x256)
+        elif 'efficientnet' in backbone_name:
+            base = models.efficientnet_v2_s(weights='IMAGENET1K_V1')
+            self.features = base.features
+            in_channels = 1280
+
+        # 2. Cấu trúc Head đạt mAP 0.79
         self.reduce_conv = nn.Sequential(
             nn.Conv2d(in_channels, 256, kernel_size=1, bias=False),
             nn.BatchNorm2d(256),
             nn.ReLU(inplace=True)
         )
-        
         self.mpn_cov = MPNCOV(iterNum=5)
         
-        # 3. Projection Head (Nơi trích xuất tri thức cho KD)
-        # Flatten của 256x256 là 65536
         self.fc_projection = nn.Linear(256 * 256, embedding_size, bias=False)
         self.bn_head = nn.BatchNorm1d(embedding_size)
         
-        # 4. Dual Classifiers (Ép tham số phân loại)
-        # Nhánh 1: Cross Entropy truyền thống
+        # Classifiers
         self.fc_ce = nn.Linear(embedding_size, num_classes)
-        
-        # Nhánh 2: Proxy-Cosine (Sử dụng cho Metric Loss)
         self.proxy_cos = nn.Parameter(torch.randn(num_classes, embedding_size))
         nn.init.kaiming_normal_(self.proxy_cos)
 
-    def forward(self, x, labels=None):
-        # Feature Extraction
+    def forward(self, x, labels=None): # Thêm labels=None để khớp với lời gọi trong train script
         x = self.features(x)
         x = self.reduce_conv(x)
-        
-        # Fine-grained reasoning (MPN-COV)
         matrix_sqrt = self.mpn_cov(x)
         flat_feat = matrix_sqrt.view(matrix_sqrt.size(0), -1)
         
-        # Embedding & Normalization
-        # Ép L2 Normalize trước khi chiếu vào FC để giữ độ ổn định
-        flat_feat = F.normalize(flat_feat, p=2, dim=1)
+        # Quá trình tạo Embedding
         embedding = self.bn_head(self.fc_projection(flat_feat))
         norm_embedding = F.normalize(embedding, p=2, dim=1)
         
-        # Logits cho CrossEntropy
+        # Tính toán Logits
         logits_sce = self.fc_ce(embedding)
-        
-        # Logits cho Cosine (Tính tương đồng với Proxy)
-        # Cosine = (Feature / ||Feature||) * (Proxy / ||Proxy||)^T
         norm_proxies = F.normalize(self.proxy_cos, p=2, dim=1)
         logits_cos = torch.mm(norm_embedding, norm_proxies.t())
         
-        return norm_embedding, logits_sce, logits_cos
+        # --- SỬA THỨ TỰ TRẢ VỀ ĐỂ KHỚP VỚI TRAIN SCRIPT ---
+        # Thứ tự mong đợi: (logits_sce, logits_csce, norm_emb)
+        return logits_sce, logits_cos, norm_embedding
