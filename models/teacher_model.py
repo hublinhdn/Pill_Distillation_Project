@@ -4,7 +4,8 @@ import torch.nn.functional as F
 from torchvision import models
 
 class MPNCOV(nn.Module):
-    def __init__(self, iterNum=5): 
+    """Lớp tính toán ma trận hiệp phương sai để bắt đặc trưng chi tiết (Fine-grained)"""
+    def __init__(self, iterNum=3):
         super(MPNCOV, self).__init__()
         self.iterNum = iterNum
 
@@ -23,34 +24,56 @@ class MPNCOV(nn.Module):
             ZY = Z.bmm(Y)
             Y = 0.5 * Y.bmm(3.0 * I - ZY)
             Z = 0.5 * (3.0 * I - ZY).bmm(Z)
-        return Y * torch.sqrt(trY).view(batchSize, 1, 1)
+        out = Y * torch.sqrt(trY).view(batchSize, 1, 1)
+        return out
 
 class PillTeacher(nn.Module):
-    def __init__(self, backbone_name='resnet50', num_classes=4902, embedding_size=1024):
+    def __init__(self, backbone_name='resnet50', num_classes=5000, embedding_size=512):
         super(PillTeacher, self).__init__()
         
-        # 1. Backbone Selection
-        if 'resnet50' in backbone_name:
-            base = models.resnet50(weights='IMAGENET1K_V1')
-            self.features = nn.Sequential(*list(base.children())[:-2])
-            in_channels = 2048
-        elif 'convnext' in backbone_name:
-            base = models.convnext_base(weights='IMAGENET1K_V1')
-            self.features = base.features
-            in_channels = 1024
-        elif 'efficientnet' in backbone_name:
-            base = models.efficientnet_v2_s(weights='IMAGENET1K_V1')
-            self.features = base.features
-            in_channels = 1280
+        self.backbone_name = backbone_name
+        print(f"🛠️ Đang khởi tạo Teacher với Backbone: {backbone_name}")
 
-        # 2. Cấu trúc Head đạt mAP 0.79
+        # 1. LỰA CHỌN BACKBONE
+        if backbone_name == 'resnet50':
+            base = models.resnet50(weights=models.ResNet50_Weights.IMAGENET1K_V1)
+            self.features = nn.Sequential(*list(base.children())[:-2])
+            self.in_channels = 2048
+        
+        elif backbone_name == 'resnet101':
+            base = models.resnet101(weights=models.ResNet101_Weights.IMAGENET1K_V1)
+            self.features = nn.Sequential(*list(base.children())[:-2])
+            self.in_channels = 2048
+
+        elif backbone_name == 'resnext101':
+            base = models.resnext101_32x8d(weights=models.ResNext101_32X8D_Weights.IMAGENET1K_V1)
+            self.features = nn.Sequential(*list(base.children())[:-2])
+            self.in_channels = 2048
+
+        elif backbone_name == 'convnext_base':
+            base = models.convnext_base(weights=models.ConvNeXt_Base_Weights.IMAGENET1K_V1)
+            self.features = base.features
+            self.in_channels = 1024
+
+        elif backbone_name == 'efficientnet_v2_s':
+            base = models.efficientnet_v2_s(weights=models.EfficientNet_V2_S_Weights.IMAGENET1K_V1)
+            self.features = base.features
+            self.in_channels = 1280
+            
+        else:
+            raise ValueError(f"Chưa hỗ trợ backbone: {backbone_name}")
+
+        # 2. CẤU TRÚC HẬU BACKBONE (CỐ ĐỊNH ĐỂ SO SÁNH CÔNG BẰNG)
+        # Nén về 256 channels trước khi vào MPN-COV để giảm tải tính toán
         self.reduce_conv = nn.Sequential(
-            nn.Conv2d(in_channels, 256, kernel_size=1, bias=False),
+            nn.Conv2d(self.in_channels, 256, kernel_size=1, bias=False),
             nn.BatchNorm2d(256),
             nn.ReLU(inplace=True)
         )
-        self.mpn_cov = MPNCOV(iterNum=5)
         
+        self.mpn_cov = MPNCOV(iterNum=3)
+        
+        # FC Projection & BN Head (Nơi lấy vector trích xuất tri thức cho KD)
         self.fc_projection = nn.Linear(256 * 256, embedding_size, bias=False)
         self.bn_head = nn.BatchNorm1d(embedding_size)
         
@@ -59,21 +82,26 @@ class PillTeacher(nn.Module):
         self.proxy_cos = nn.Parameter(torch.randn(num_classes, embedding_size))
         nn.init.kaiming_normal_(self.proxy_cos)
 
-    def forward(self, x, labels=None): # Thêm labels=None để khớp với lời gọi trong train script
+    def forward(self, x, labels=None):
+        # Feature Extraction
         x = self.features(x)
+        
+        # Nếu là ConvNeXt hoặc EfficientNet, đôi khi output cần điều chỉnh lại shape 
+        # nhưng lớp .features của torchvision thường trả về đúng (B, C, H, W)
         x = self.reduce_conv(x)
+        
+        # MPN-COV
         matrix_sqrt = self.mpn_cov(x)
         flat_feat = matrix_sqrt.view(matrix_sqrt.size(0), -1)
         
-        # Quá trình tạo Embedding
+        # Embedding
+        flat_feat = F.normalize(flat_feat, p=2, dim=1)
         embedding = self.bn_head(self.fc_projection(flat_feat))
         norm_embedding = F.normalize(embedding, p=2, dim=1)
         
-        # Tính toán Logits
-        logits_sce = self.fc_ce(embedding)
-        norm_proxies = F.normalize(self.proxy_cos, p=2, dim=1)
-        logits_cos = torch.mm(norm_embedding, norm_proxies.t())
+        if labels is not None:
+            logits_sce = self.fc_ce(embedding)
+            logits_cos = F.linear(norm_embedding, F.normalize(self.proxy_cos, p=2, dim=1))
+            return norm_embedding, logits_sce, logits_cos
         
-        # --- SỬA THỨ TỰ TRẢ VỀ ĐỂ KHỚP VỚI TRAIN SCRIPT ---
-        # Thứ tự mong đợi: (logits_sce, logits_csce, norm_emb)
-        return logits_sce, logits_cos, norm_embedding
+        return norm_embedding
