@@ -23,7 +23,7 @@ from utils.data_utils import load_epill_full_data
 def train_one_fold(args, f_idx, num_classes, df_train, df_val, df_ref, device):
     # --- CẤU HÌNH HỆ SỐ LOSS (THEO BENCHMARK) ---
     L_SCE = 1.0        # Trọng số Softmax Cross Entropy
-    L_CSCE = 0.2       # Trọng số ArcFace (Benchmark dùng 0.1)
+    L_CSCE = 1.0       # Trọng số ArcFace (Benchmark dùng 0.1)
     L_TRIPLET = 1.0    # Trọng số Triplet Loss
     L_CONTRASTIVE = 1.0 # Trọng số Contrastive Loss
     

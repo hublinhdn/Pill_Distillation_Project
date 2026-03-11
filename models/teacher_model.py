@@ -4,6 +4,18 @@ import torch.nn.functional as F
 import math
 from torchvision import models
 
+class GeMPooling(nn.Module):
+    def __init__(self, p=3.0, eps=1e-6):
+        super(GeMPooling, self).__init__()
+        # Tham số p có thể học được (learnable) trong quá trình train
+        self.p = nn.Parameter(torch.ones(1) * p)
+        self.eps = eps
+
+    def forward(self, x):
+        # clamp để tránh lỗi NaN khi x quá nhỏ
+        x = x.clamp(min=self.eps).pow(self.p)
+        return F.avg_pool2d(x, (x.size(-2), x.size(-1))).pow(1./self.p)
+    
 class MPNCOV(nn.Module):
     def __init__(self, iterNum=3):
         super(MPNCOV, self).__init__()
@@ -49,14 +61,32 @@ class PillTeacher(nn.Module):
             base.layer4[0].downsample[0].stride = (1, 1)
             self.features = nn.Sequential(*list(base.children())[:-2])
             in_channels = 2048
+        
+        # ---------------------------------------------------------
+        # 2. TỰ ĐỘNG PHÁT HIỆN SỐ KÊNH (IN_CHANNELS) BẰNG DUMMY TENSOR
+        # ---------------------------------------------------------
+        with torch.no_grad():
+            # Tạo một ảnh giả kích thước [1, 3, 224, 224] (Batch=1, Kênh=3, W=224, H=224)
+            dummy_input = torch.zeros(1, 3, 224, 224)
+            # Chạy thử qua backbone để lấy feature map
+            dummy_feat = self.features(dummy_input)
+            # Kích thước dummy_feat sẽ là [1, in_channels, H, W]. Ta lấy index số 1.
+            in_channels = dummy_feat.shape[1] 
+            
+        print(f"✅ Backbone [{backbone_type}] tự động detect số kênh đầu ra: {in_channels}")
 
-        self.reduce_conv = nn.Sequential(
-            nn.Conv2d(in_channels, 256, kernel_size=1, bias=False),
-            nn.BatchNorm2d(256),
-            nn.ReLU(inplace=True)
-        )
-        self.mpn_cov = MPNCOV(iterNum=3)
-        self.fc_projection = nn.Linear(256 * 256, embedding_size, bias=False)
+        # self.reduce_conv = nn.Sequential(
+        #     nn.Conv2d(in_channels, 256, kernel_size=1, bias=False),
+        #     nn.BatchNorm2d(256),
+        #     nn.ReLU(inplace=True)
+        # )
+        # self.mpn_cov = MPNCOV(iterNum=3)
+        # self.fc_projection = nn.Linear(256 * 256, embedding_size, bias=False)
+
+        # --- THÊM GEM POOLING MỚI ---
+        self.pool = GeMPooling(p=3.0)
+        self.fc_projection = nn.Linear(in_channels, embedding_size, bias=False)
+
         self.bn_head = nn.BatchNorm1d(embedding_size)
 
         # Classifier Heads
@@ -72,14 +102,22 @@ class PillTeacher(nn.Module):
 
     def forward(self, x, labels=None):
         feat = self.features(x)
-        feat = self.reduce_conv(feat)
-        matrix_sqrt = self.mpn_cov(feat)
-        flat_feat = matrix_sqrt.view(matrix_sqrt.size(0), -1)
+
+        # --- LUỒNG ĐI MỚI (CỰC KỲ GỌN NHẸ VÀ MẠNH) ---
+        pooled_feat = self.pool(feat).view(feat.size(0), -1) # Output: [Batch, 2048]
         
-        # Normalize and Project
-        flat_feat = F.normalize(flat_feat, p=2, dim=1)
-        embedding = self.bn_head(self.fc_projection(flat_feat))
+        # Project xuống 512 và Normalize
+        embedding = self.bn_head(self.fc_projection(pooled_feat))
         norm_embedding = F.normalize(embedding, p=2, dim=1)
+
+        # feat = self.reduce_conv(feat)
+        # matrix_sqrt = self.mpn_cov(feat)
+        # flat_feat = matrix_sqrt.view(matrix_sqrt.size(0), -1)
+        
+        # # Normalize and Project
+        # flat_feat = F.normalize(flat_feat, p=2, dim=1)
+        # embedding = self.bn_head(self.fc_projection(flat_feat))
+        # norm_embedding = F.normalize(embedding, p=2, dim=1)
         
         if labels is not None:
             # 1. Nhánh SCE

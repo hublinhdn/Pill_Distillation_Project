@@ -14,7 +14,13 @@ Dự án nghiên cứu về nhận diện thuốc qua ảnh chụp thực tế b
 ├── README.md           # Hướng dẫn dự án
 └── .gitignore          # Cấu hình bỏ qua file rác và dữ liệu nặng
 ```
-
+## benchmark simple
+L_SCE = 1.0        # Trọng số Softmax Cross Entropy
+L_CSCE = 0.2       # Trọng số ArcFace (Benchmark dùng 0.1)
+L_TRIPLET = 1.0    # Trọng số Triplet Loss
+L_CONTRASTIVE = 1.0 # Trọng số Contrastive Loss
+resnet50 (1, 0.1, 1, 1): 0.61
+resnet50(1,0.2, 1, 1): 
 ## Run train_teacher_cv.py
 
 tmux new -s train_teacher_cv -d "bash -lc '
