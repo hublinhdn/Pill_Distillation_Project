@@ -28,7 +28,7 @@ def train_one_fold(args, f_idx, num_classes, df_train, df_val, df_ref, device):
     L_CONTRASTIVE = 1.0 # Trọng số Contrastive Loss
     
     # Cấu hình Batch
-    n_classes, n_samples = 4, 4 
+    n_classes, n_samples = 16, 2 
     accumulation_steps = 4 # Tăng để batch nhìn thấy nhiều class hơn
     
     # Augmentation ImageNet Style
@@ -50,12 +50,14 @@ def train_one_fold(args, f_idx, num_classes, df_train, df_val, df_ref, device):
     ])
 
     train_loader = DataLoader(PillDataset(df_train, train_transform), 
-                              batch_sampler=BalancedBatchSampler(df_train['label_idx'].values, n_classes, n_samples),
+                              batch_sampler=BalancedBatchSampler(df_train['sub_label_idx'].values, n_classes, n_samples),
                               num_workers=4, pin_memory=True)
     val_loader = DataLoader(PillDataset(pd.concat([df_val, df_ref]), val_transform), 
                             batch_size=32, shuffle=False, num_workers=4)
     
-    model = PillTeacher(num_classes=num_classes, backbone_type=args.backbone, m=0.5).to(device)
+    # 1. Cập nhật số lượng class thực tế cho Model
+    num_sub_classes = num_classes * 2
+    model = PillTeacher(num_classes=num_sub_classes, backbone_type=args.backbone, m=0.5).to(device)
     optimizer = torch.optim.AdamW(model.parameters(), lr=2e-4, weight_decay=1e-2)
     scheduler = MultiStepLR(optimizer, milestones=[60, 85], gamma=0.1)
     scaler = torch.amp.GradScaler('cuda')
@@ -72,20 +74,21 @@ def train_one_fold(args, f_idx, num_classes, df_train, df_val, df_ref, device):
         model.train()
         pbar = tqdm(train_loader, desc=f"Fold {f_idx} | Ep {epoch}")
         
-        for i, (imgs, labels, _) in enumerate(pbar):
-            imgs, labels = imgs.to(device), labels.to(device).long()
+        for i, (imgs, sub_labels, labels, is_refs) in enumerate(pbar):
+            imgs = imgs.to(device)
+            sub_labels = sub_labels.to(device).long() # Dùng sub_labels để tính Loss
             
             with torch.amp.autocast('cuda'):
-                logits_sce, logits_csce, norm_emb = model(imgs, labels)
+                logits_sce, logits_csce, norm_emb = model(imgs, sub_labels)
                 
                 # 1. SCE & CSCE (ArcFace)
-                l_sce = criterion_sce(logits_sce, labels)
-                l_csce = F.cross_entropy(logits_csce, labels)
+                l_sce = criterion_sce(logits_sce, sub_labels)
+                l_csce = F.cross_entropy(logits_csce, sub_labels)
                 
                 # 2. Metric Learning Losses
-                indices_tuple = miner_hard(norm_emb, labels)
-                l_triplet = loss_triplet_func(norm_emb, labels, indices_tuple)
-                l_contrastive = loss_contrast_func(norm_emb, labels)
+                indices_tuple = miner_hard(norm_emb, sub_labels)
+                l_triplet = loss_triplet_func(norm_emb, sub_labels, indices_tuple)
+                l_contrastive = loss_contrast_func(norm_emb, sub_labels)
                 
                 # TỔNG HỢP LOSS THEO BIẾN ĐÃ KHAI BÁO
                 loss = (L_SCE * l_sce + 
@@ -122,7 +125,7 @@ def train_one_fold(args, f_idx, num_classes, df_train, df_val, df_ref, device):
 
 def main():
     parser = argparse.ArgumentParser()
-    parser.add_argument('--backbone', type=str, default='resnet101', choices=['resnet50', 'resnet101', 'convnext_base'])
+    parser.add_argument('--backbone', type=str, default='resnet50', choices=['resnet50', 'resnet101', 'convnext_base'])
     args = parser.parse_args()
 
     torch.cuda.empty_cache()
@@ -140,11 +143,12 @@ def main():
     # 2. Xác định các fold dùng cho Cross-Validation (0, 1, 2, 3)
     # Loại bỏ Fold 4 (Hold-out) khỏi quá trình train/val này
     cv_folds = [0, 1, 2, 3]
+    cv_folds_to_run = [0] # test run 1 fold, tra lai 0,1,2,3 khi OK
 
     # --- BIẾN LƯU TRỮ REPORT ---
     results_summary = []
     
-    for fold in cv_folds:
+    for fold in cv_folds_to_run:
         print(f"\n🚀 Training Fold {fold}...")
         
         # --- TẬP VAL ---

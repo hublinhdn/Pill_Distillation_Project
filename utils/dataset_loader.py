@@ -15,14 +15,20 @@ class PillDataset(Dataset):
         return len(self.df)
 
     def __getitem__(self, idx):
-        img_path = os.path.join(self.root_path, self.df.iloc[idx]['image_path'])
+        row = self.df.iloc[idx]
+        img_path = os.path.join(self.root_path, row['image_path'])
         image = Image.open(img_path).convert('RGB')
-        label = self.df.iloc[idx]['label_idx']
-        is_ref = self.df.iloc[idx]['is_ref']
+        label = row['label_idx']
+        sub_label = row['sub_label_idx']
+
+        is_ref = row['is_ref']
         
         if self.transform:
             image = self.transform(image)
-        return image, label, is_ref
+
+        # Trả về sub_label để train, label gốc để eval
+        return image, sub_label, label, is_ref
+        # return image, label, is_ref
 
 def get_transforms(is_train=True, size=224):
     if is_train:

@@ -1,65 +1,68 @@
 import torch
 import numpy as np
+import torch.nn.functional as F
 from tqdm import tqdm
 
-def evaluate_retrieval(model, dataloader, device):
+def evaluate_retrieval(model, loader, device):
     """
     Đánh giá mô hình theo tiêu chuẩn Max-Matching + Flip-Augmentation.
     Trích xuất vector đặc trưng của ảnh gốc và ảnh lật ngang, sau đó cộng trung bình.
     """
     model.eval()
-    all_embs = []
-    all_labels = []
-    all_is_refs = []
+    all_embs, all_labels, all_is_refs = [], [], []
 
     with torch.no_grad():
-        for imgs, labels, is_refs in tqdm(dataloader, desc="Eval (Flip-Match)", leave=False):
+        for imgs, sub_labels, labels, is_refs in loader:
             imgs = imgs.to(device)
             
-            # 1. Trích xuất ảnh gốc
-            with torch.amp.autocast('cuda'):
-                out_orig = model(imgs)
-                emb_orig = out_orig[-1] if isinstance(out_orig, tuple) else out_orig
-                
-                # 2. Trích xuất ảnh lật ngang (Horizontal Flip)
-                out_flip = model(torch.flip(imgs, dims=[3]))
-                emb_flip = out_flip[-1] if isinstance(out_flip, tuple) else out_flip
-                
-                # Trung bình cộng và chuẩn hóa lại L2
-                emb_final = (emb_orig + emb_flip) / 2.0
-                emb_final = torch.nn.functional.normalize(emb_final, p=2, dim=1)
+            # --- 1. BỔ SUNG FLIP-AUGMENTATION (TTA) ---
+            # Trích xuất ảnh gốc
+            emb_orig = model(imgs)
             
-            all_embs.append(emb_final.cpu().half())
-            all_labels.append(labels)
+            # Lật ảnh theo chiều ngang (chiều rộng = dim 3) và trích xuất
+            imgs_flipped = torch.flip(imgs, dims=[3])
+            emb_flipped = model(imgs_flipped)
+            
+            # Cộng trung bình và chuẩn hóa lại (L2 Norm)
+            emb_fused = (emb_orig + emb_flipped) / 2.0
+            emb_fused = F.normalize(emb_fused, p=2, dim=1)
+            
+            all_embs.append(emb_fused.cpu())
+            all_labels.append(labels) 
             all_is_refs.append(is_refs)
 
-    all_embs = torch.cat(all_embs).float()
+    all_embs = torch.cat(all_embs).numpy()
     all_labels = torch.cat(all_labels).numpy()
     all_is_refs = torch.cat(all_is_refs).numpy()
 
-    q_indices = np.where(all_is_refs == 0)[0]
-    g_indices = np.where(all_is_refs == 1)[0]
-    q_embs, q_labels = all_embs[q_indices], all_labels[q_indices]
-    g_embs, g_labels = all_embs[g_indices], all_labels[g_indices]
+    q_embs = all_embs[all_is_refs == 0]
+    q_labels = all_labels[all_is_refs == 0]
+    g_embs = all_embs[all_is_refs == 1]
+    g_labels = all_labels[all_is_refs == 1]
+
+    sim_matrix = np.dot(q_embs, g_embs.T)
 
     unique_g_labels = np.unique(g_labels)
-    gallery_by_label = {l: g_embs[g_labels == l] for l in unique_g_labels}
-    
-    max_sims = torch.zeros((len(q_labels), len(unique_g_labels)))
-    for j, label in enumerate(unique_g_labels):
-        label_embs = gallery_by_label[label]
-        sim_matrix = torch.mm(q_embs, label_embs.t())
-        max_sims[:, j] = torch.max(sim_matrix, dim=1)[0]
-
     aps = []
-    rank1_correct = 0
-    for i in range(len(q_labels)):
-        scores = max_sims[i].numpy()
-        sorted_labels = unique_g_labels[np.argsort(scores)[::-1]]
-        if sorted_labels[0] == q_labels[i]: rank1_correct += 1
-        
-        binary_hits = (sorted_labels == q_labels[i]).astype(int)
-        relevant_rank = np.where(binary_hits == 1)[0] + 1
-        aps.append(1.0 / relevant_rank[0])
+    r1 = 0
 
-    return {'mAP': np.mean(aps), 'Rank-1': rank1_correct / len(q_labels)}
+    # --- 2. TỐI ƯU TỐC ĐỘ MAX-SCORE ---
+    # Tìm trước index của các mặt thuốc cho mỗi loại (Chỉ chạy 1 lần)
+    g_lab_indices = [np.where(g_labels == g_lab)[0] for g_lab in unique_g_labels]
+
+    for i in range(len(q_labels)):
+        scores = sim_matrix[i]
+        
+        # Lấy max score cực nhanh dựa trên list index đã tính sẵn
+        pill_scores = np.array([np.max(scores[idx]) for idx in g_lab_indices])
+
+        sorted_indices = np.argsort(-pill_scores)
+        pred_labels = unique_g_labels[sorted_indices]
+        
+        if pred_labels[0] == q_labels[i]:
+            r1 += 1
+            
+        rank = np.where(pred_labels == q_labels[i])[0][0] + 1
+        aps.append(1.0 / rank)
+        
+    return {'mAP': np.mean(aps), 'Rank-1': r1 / len(q_labels)}

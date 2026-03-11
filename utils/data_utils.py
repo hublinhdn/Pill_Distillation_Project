@@ -54,6 +54,13 @@ def load_epill_full_data():
             
     # 4. CHUẨN HÓA is_ref
     df_all['is_ref'] = df_all['is_ref'].map({True: 1, False: 0, 1: 1, 0: 0, 'True': 1, 'False': 0}).astype(int)
+    df_all['is_front'] = df_all['is_front'].map({True: 1, False: 0, 1: 1, 0: 0, 'True': 1, 'False': 0}).astype(int)
+
+       # THÊM DÒNG NÀY: Tạo nhãn phụ phân biệt mặt trước/sau
+    # Nếu label_idx là 10: 
+    #   - Mặt trước (is_front=1) -> sub_label = 21
+    #   - Mặt sau (is_front=0)   -> sub_label = 20
+    df_all['sub_label_idx'] = df_all['label_idx'] * 2 + df_all['is_front'].astype(int)
     
     # Kiểm tra kết quả cuối cùng
     total_samples = len(df_all)
