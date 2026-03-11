@@ -23,7 +23,7 @@ from utils.data_utils import load_epill_full_data
 def train_one_fold(args, f_idx, num_classes, df_train, df_val, df_ref, device):
     # --- CẤU HÌNH HỆ SỐ LOSS (THEO BENCHMARK) ---
     L_SCE = 1.0        # Trọng số Softmax Cross Entropy
-    L_CSCE = 0.1       # Trọng số ArcFace (Benchmark dùng 0.1)
+    L_CSCE = 0.2       # Trọng số ArcFace (Benchmark dùng 0.1)
     L_TRIPLET = 1.0    # Trọng số Triplet Loss
     L_CONTRASTIVE = 1.0 # Trọng số Contrastive Loss
     
@@ -39,7 +39,9 @@ def train_one_fold(args, f_idx, num_classes, df_train, df_val, df_ref, device):
         transforms.RandomRotation(15),
         transforms.ColorJitter(0.2, 0.2),
         transforms.ToTensor(),
-        transforms.Normalize(mean=[0.485, 0.456, 0.406], std=[0.229, 0.224, 0.225])
+        transforms.Normalize(mean=[0.485, 0.456, 0.406], std=[0.229, 0.224, 0.225]),
+        # THÊM DÒNG NÀY Ở CUỐI: Xóa ngẫu nhiên 2% - 10% diện tích ảnh
+        transforms.RandomErasing(p=0.5, scale=(0.02, 0.1))
     ])
     
     val_transform = transforms.Compose([
@@ -59,7 +61,8 @@ def train_one_fold(args, f_idx, num_classes, df_train, df_val, df_ref, device):
     num_sub_classes = num_classes * 2
     model = PillTeacher(num_classes=num_sub_classes, backbone_type=args.backbone, m=0.5).to(device)
     optimizer = torch.optim.AdamW(model.parameters(), lr=2e-4, weight_decay=1e-2)
-    scheduler = MultiStepLR(optimizer, milestones=[60, 85], gamma=0.1)
+    # scheduler = MultiStepLR(optimizer, milestones=[60, 85], gamma=0.1)
+    scheduler = torch.optim.lr_scheduler.CosineAnnealingLR(optimizer, T_max=100, eta_min=1e-6)
     scaler = torch.amp.GradScaler('cuda')
 
     # Khởi tạo các hàm Loss

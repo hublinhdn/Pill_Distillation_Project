@@ -27,7 +27,7 @@ class MPNCOV(nn.Module):
         return Y * torch.sqrt(trY).view(batchSize, 1, 1)
 
 class PillTeacher(nn.Module):
-    def __init__(self, num_classes, backbone_type='resnet101', embedding_size=512, s=32.0, m=0.50):
+    def __init__(self, num_classes, backbone_type='resnet101', embedding_size=512, s=64.0, m=0.50):
         super(PillTeacher, self).__init__()
         self.s = s 
         self.m = m 
