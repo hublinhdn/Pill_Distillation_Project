@@ -56,18 +56,20 @@ def load_epill_full_data():
     df_all['is_ref'] = df_all['is_ref'].map({True: 1, False: 0, 1: 1, 0: 0, 'True': 1, 'False': 0}).astype(int)
     df_all['is_front'] = df_all['is_front'].map({True: 1, False: 0, 1: 1, 0: 0, 'True': 1, 'False': 0}).astype(int)
 
-       # THÊM DÒNG NÀY: Tạo nhãn phụ phân biệt mặt trước/sau
-    # Nếu label_idx là 10: 
-    #   - Mặt trước (is_front=1) -> sub_label = 21
-    #   - Mặt sau (is_front=0)   -> sub_label = 20
-    df_all['sub_label_idx'] = df_all['label_idx'] * 2 + df_all['is_front'].astype(int)
+    # 1. Tạo chuỗi kết hợp ID thuốc và mặt trước/sau (ví dụ: "105_1", "105_0")
+    df_all['sub_label_raw'] = df_all['label_idx'].astype(str) + "_" + df_all['is_front'].astype(str)
+    # 2. pd.factorize tự động đánh số lại chuỗi trên thành các số nguyên liên tục: 0, 1, 2, ..., N-1
+    df_all['sub_label_idx'] = pd.factorize(df_all['sub_label_raw'])[0]
     
     # Kiểm tra kết quả cuối cùng
     total_samples = len(df_all)
     ref_count = (df_all['is_ref'] == 1).sum()
     cons_count = (df_all['is_ref'] == 0).sum()
+
+    total_classes = df_all['label_idx'].nunique()
+    total_sub_classes = df_all['sub_label_idx'].nunique()
     
-    print(f"✅ Load thành công: Total {total_samples} | Ref: {ref_count} | Cons: {cons_count}")
+    print(f"✅ Load thành công: Total {total_samples} | Ref: {ref_count} | Cons: {cons_count} | total_classes: {total_classes} | total_sub_classes:{total_sub_classes}")
     return df_all
 
 if __name__ == "__main__":

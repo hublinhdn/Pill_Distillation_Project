@@ -90,7 +90,8 @@ class PillTeacher(nn.Module):
         self.bn_head = nn.BatchNorm1d(embedding_size)
 
         # Classifier Heads
-        self.fc_ce = nn.Linear(embedding_size, num_classes) 
+        # self.fc_ce = nn.Linear(embedding_size, num_classes) 
+        self.fc_ce = nn.Linear(embedding_size, num_classes, bias=False) # XÓA BIAS
         self.weight = nn.Parameter(torch.FloatTensor(num_classes, embedding_size))
         nn.init.xavier_uniform_(self.weight)
 
@@ -103,29 +104,25 @@ class PillTeacher(nn.Module):
     def forward(self, x, labels=None):
         feat = self.features(x)
 
-        # --- LUỒNG ĐI MỚI (CỰC KỲ GỌN NHẸ VÀ MẠNH) ---
-        pooled_feat = self.pool(feat).view(feat.size(0), -1) # Output: [Batch, 2048]
+        pooled_feat = self.pool(feat).view(feat.size(0), -1) 
         
-        # Project xuống 512 và Normalize
+        # 1. Tính Embedding thô
         embedding = self.bn_head(self.fc_projection(pooled_feat))
-        norm_embedding = F.normalize(embedding, p=2, dim=1)
-
-        # feat = self.reduce_conv(feat)
-        # matrix_sqrt = self.mpn_cov(feat)
-        # flat_feat = matrix_sqrt.view(matrix_sqrt.size(0), -1)
         
-        # # Normalize and Project
-        # flat_feat = F.normalize(flat_feat, p=2, dim=1)
-        # embedding = self.bn_head(self.fc_projection(flat_feat))
-        # norm_embedding = F.normalize(embedding, p=2, dim=1)
+        # 2. Chuẩn hóa L2 (ĐÂY LÀ VECTOR QUAN TRỌNG NHẤT)
+        norm_embedding = F.normalize(embedding, p=2, dim=1)
         
         if labels is not None:
-            # 1. Nhánh SCE
-            logits_sce = self.fc_ce(embedding)
+            # --- SỬA LẠI NHÁNH SCE ---
+            # Dùng norm_embedding nhân với trọng số đã chuẩn hóa của fc_ce, sau đó nhân với Scale (s)
+            # Điều này tương đương với CosFace, giúp Softmax Loss "cộng hưởng" sức mạnh với ArcFace
+            weight_norm = F.normalize(self.fc_ce.weight, p=2, dim=1)
+            cosine_sce = F.linear(norm_embedding, weight_norm)
+            logits_sce = cosine_sce * self.s
             
-            # 2. Nhánh ArcFace (CSCE)
+            # --- NHÁNH ARCFACE GIỮ NGUYÊN ---
             cosine = F.linear(norm_embedding, F.normalize(self.weight))
-            cosine = cosine.clamp(-1.0 + 1e-7, 1.0 - 1e-7) # Ổn định số học
+            cosine = cosine.clamp(-1.0 + 1e-7, 1.0 - 1e-7) 
             
             sine = torch.sqrt(1.0 - torch.pow(cosine, 2))
             phi = cosine * self.cos_m - sine * self.sin_m 
