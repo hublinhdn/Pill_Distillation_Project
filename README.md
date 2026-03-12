@@ -26,16 +26,19 @@ resnet50(1,1, 0.2, 1) + GemPooling + m=0.35 (arcface) + CosineAnnealingLR
 resnet50(1,1, 1, 1) + GemPooling + m=0.35 (arcface) + CosineAnnealingLR 
 + size 384 + correct CE embedding + 100 epoch: 0.65 ==> rollback
 
+resnet50(1,1, 1, 1) + GemPooling + SubCenterArcFace + 60 epoch: 0.53
+
 convnext_base(1,1, 1, 1) + GemPooling + m=0.35 (arcface) + CosineAnnealingLR 
 + size 384 + correct CE embedding + 100 epoch: 0.762
 
-resnet50(1,1, 1, 1) + GemPooling + SubCenterArcFace + 60 epoch: 
+convnext_base (1, 0.2, 1, 1): -
+
 
 ## Run train_teacher_cv.py
 
-tmux new -s train_resnet50 -d "bash -lc '
-python pipelines/train_teacher_cv.py --backbone resnet50 \
-|& tee -a logs/train_resnet50_cv_$(date +%F_%H%M%S).log
+tmux new -s train_multi -d "bash -lc '
+python pipelines/train_teacher_cv.py --backbone convnext_large,convnext_base,resnet101,resnet50,mobilenet_v3_large,resnet18 \
+|& tee -a logs/train_multi_cv_$(date +%F_%H%M%S).log
 '"
 
 

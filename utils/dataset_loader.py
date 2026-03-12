@@ -6,9 +6,12 @@ import os
 import numpy as np
 
 class PillDataset(Dataset):
-    def __init__(self, df, transform=None):
+    # Thêm tham số transform_ref
+    def __init__(self, df, transform=None, transform_ref=None):
         self.df = df
         self.transform = transform
+        # Nếu không truyền transform_ref, mặc định dùng chung transform
+        self.transform_ref = transform_ref if transform_ref is not None else transform
         self.root_path = 'data/raw/ePillID/classification_data'
 
     def __len__(self):
@@ -20,22 +23,23 @@ class PillDataset(Dataset):
         image = Image.open(img_path).convert('RGB')
         label = row['label_idx']
         sub_label = row['sub_label_idx']
-
         is_ref = row['is_ref']
         
-        if self.transform:
+        # PHÂN LUỒNG AUGMENTATION THÔNG MINH
+        if is_ref == 1 and self.transform_ref:
+            image = self.transform_ref(image)
+        elif self.transform:
             image = self.transform(image)
 
         # Trả về sub_label để train, label gốc để eval
         return image, sub_label, label, is_ref
-        # return image, label, is_ref
 
-def get_transforms(is_train=True, size=224):
+def get_transforms(is_train=True, size=448): # Cập nhật size mặc định lên 448
     if is_train:
         return transforms.Compose([
             transforms.Resize((size, size)),
             transforms.RandomHorizontalFlip(),
-            transforms.RandomRotation(180),
+            transforms.RandomRotation(15), # Giảm góc xoay xuống 15 để tránh lật ngược chữ
             transforms.ColorJitter(brightness=0.2, contrast=0.2),
             transforms.ToTensor(),
             transforms.Normalize(mean=[0.485, 0.456, 0.406], std=[0.229, 0.224, 0.225])

@@ -36,47 +36,80 @@ class MPNCOV(nn.Module):
             Z = 0.5 * (3.0 * I - ZY).bmm(Z)
         return Y * torch.sqrt(trY).view(batchSize, 1, 1)
 
-class PillTeacher(nn.Module):
+class PillRetrievalModel(nn.Module):
+    """
+    Model Factory chung cho cả Teacher (Heavy Backbones) và Student (Lightweight Backbones).
+    Tự động trích xuất feature map và config số kênh đầu vào cho head.
+    """
     def __init__(self, num_classes, backbone_type='resnet50', embedding_size=512, s=64.0, m=0.35):
-        super(PillTeacher, self).__init__()
+        super(PillRetrievalModel, self).__init__()
         self.s = s 
         self.m = m 
         
-        # Backbone Selection
-        if backbone_type == 'resnet101':
-            base = models.resnet101(weights='ResNet101_Weights.IMAGENET1K_V2')
-            base.layer4[0].conv2.stride = (1, 1)
-            base.layer4[0].downsample[0].stride = (1, 1)
-            self.features = nn.Sequential(*list(base.children())[:-2])
-            in_channels = 2048
-        elif backbone_type == 'convnext_base':
-            base = models.convnext_base(weights='ConvNeXt_Base_Weights.IMAGENET1K_V1')
+        # ==========================================
+        # 1. KHU VỰC HEAVY BACKBONES (CHO TEACHER)
+        # ==========================================
+        if backbone_type == 'convnext_large':
+            base = models.convnext_large(weights='DEFAULT')
             self.features = base.features
-            in_channels = 1024
-        else:
-            base = models.resnet50(weights='ResNet50_Weights.IMAGENET1K_V2')
+            
+        elif backbone_type == 'convnext_base':
+            base = models.convnext_base(weights='DEFAULT')
+            self.features = base.features
+            
+        elif backbone_type == 'resnet101':
+            base = models.resnet101(weights='DEFAULT')
+            # Loại bỏ stride ở layer4 để giữ feature map lớn (độ phân giải cao)
             base.layer4[0].conv2.stride = (1, 1)
             base.layer4[0].downsample[0].stride = (1, 1)
             self.features = nn.Sequential(*list(base.children())[:-2])
-            in_channels = 2048
+            
+        # ==========================================
+        # 2. KHU VỰC LIGHTWEIGHT BACKBONES (CHO STUDENT/BASELINE)
+        # ==========================================
+        elif backbone_type == 'mobilenet_v3_large':
+            base = models.mobilenet_v3_large(weights='DEFAULT')
+            self.features = base.features
+            
+        elif backbone_type == 'efficientnet_b0':
+            base = models.efficientnet_b0(weights='DEFAULT')
+            self.features = base.features
+            
+        elif backbone_type == 'resnet18':
+            base = models.resnet18(weights='DEFAULT')
+            # Lưu ý: ResNet18 dùng BasicBlock (stride nằm ở conv1, khác với Bottleneck của ResNet50/101)
+            base.layer4[0].conv1.stride = (1, 1)
+            base.layer4[0].downsample[0].stride = (1, 1)
+            self.features = nn.Sequential(*list(base.children())[:-2])
+            
+        # ==========================================
+        # 3. BACKBONE MẶC ĐỊNH (RESNET50)
+        # ==========================================
+        else:
+            base = models.resnet50(weights='DEFAULT')
+            base.layer4[0].conv2.stride = (1, 1)
+            base.layer4[0].downsample[0].stride = (1, 1)
+            self.features = nn.Sequential(*list(base.children())[:-2])
         
-        # TỰ ĐỘNG PHÁT HIỆN SỐ KÊNH BẰNG DUMMY TENSOR
+        # --- TỰ ĐỘNG PHÁT HIỆN SỐ KÊNH BẰNG DUMMY TENSOR ---
+        # Logic này giúp model hoạt động trơn tru bất kể mạng nào được chọn
         with torch.no_grad():
             dummy_input = torch.zeros(1, 3, 224, 224)
             dummy_feat = self.features(dummy_input)
             in_channels = dummy_feat.shape[1] 
             
-        print(f"✅ Backbone [{backbone_type}] detect số kênh đầu ra: {in_channels}")
+        print(f"✅ Khởi tạo [{backbone_type}] - Detect số kênh đầu ra: {in_channels}")
 
-        # --- GEM POOLING ---
+        # --- GEM POOLING & PROJECTION HEAD ---
         self.pool = GeMPooling(p=3.0)
         self.fc_projection = nn.Linear(in_channels, embedding_size, bias=False)
         self.bn_head = nn.BatchNorm1d(embedding_size)
 
-        # Nhánh SCE
+        # --- NHÁNH LOSS CHO CLASSIFICATION (Huấn luyện) ---
+        # 1. Nhánh SCE (Cộng hưởng CosFace)
         self.fc_ce = nn.Linear(embedding_size, num_classes, bias=False)
         
-        # Nhánh ArcFace Chuẩn
+        # 2. Nhánh ArcFace Chuẩn
         self.weight = nn.Parameter(torch.FloatTensor(num_classes, embedding_size))
         nn.init.xavier_uniform_(self.weight)
 
@@ -93,12 +126,12 @@ class PillTeacher(nn.Module):
         norm_embedding = F.normalize(embedding, p=2, dim=1)
         
         if labels is not None:
-            # Nhánh SCE (Cộng hưởng CosFace)
+            # Nhánh SCE
             weight_norm = F.normalize(self.fc_ce.weight, p=2, dim=1)
             cosine_sce = F.linear(norm_embedding, weight_norm)
             logits_sce = cosine_sce * self.s
             
-            # Nhánh ArcFace Tiêu chuẩn
+            # Nhánh ArcFace
             cosine = F.linear(norm_embedding, F.normalize(self.weight))
             cosine = cosine.clamp(-1.0 + 1e-7, 1.0 - 1e-7) 
             
@@ -114,4 +147,5 @@ class PillTeacher(nn.Module):
             
             return logits_sce, logits_csce, norm_embedding
         
+        # Khi Inference (Evaluation), chỉ trả về Vector đặc trưng chuẩn hóa
         return norm_embedding
