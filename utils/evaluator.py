@@ -5,29 +5,21 @@ from tqdm import tqdm
 
 def evaluate_retrieval(model, loader, device):
     """
-    Đánh giá mô hình theo tiêu chuẩn Max-Matching + Flip-Augmentation.
-    Trích xuất vector đặc trưng của ảnh gốc và ảnh lật ngang, sau đó cộng trung bình.
+    Đánh giá mô hình theo tiêu chuẩn Max-Matching.
+    Đã loại bỏ Flip-Augmentation để bảo toàn đặc trưng chữ (imprint) của thuốc.
     """
     model.eval()
     all_embs, all_labels, all_is_refs = [], [], []
 
     with torch.no_grad():
-        for imgs, sub_labels, labels, is_refs in loader:
+        for imgs, sub_labels, labels, is_refs in loader: # Vẫn nhận sub_labels từ loader nhưng bỏ qua
             imgs = imgs.to(device)
             
-            # --- 1. BỔ SUNG FLIP-AUGMENTATION (TTA) ---
-            # Trích xuất ảnh gốc
+            # --- CHỈ LẤY ĐẶC TRƯNG GỐC ---
             emb_orig = model(imgs)
+            emb_norm = F.normalize(emb_orig, p=2, dim=1) # Chuẩn hóa L2
             
-            # Lật ảnh theo chiều ngang (chiều rộng = dim 3) và trích xuất
-            imgs_flipped = torch.flip(imgs, dims=[3])
-            emb_flipped = model(imgs_flipped)
-            
-            # Cộng trung bình và chuẩn hóa lại (L2 Norm)
-            emb_fused = (emb_orig + emb_flipped) / 2.0
-            emb_fused = F.normalize(emb_fused, p=2, dim=1)
-            
-            all_embs.append(emb_fused.cpu())
+            all_embs.append(emb_norm.cpu())
             all_labels.append(labels) 
             all_is_refs.append(is_refs)
 
@@ -40,20 +32,21 @@ def evaluate_retrieval(model, loader, device):
     g_embs = all_embs[all_is_refs == 1]
     g_labels = all_labels[all_is_refs == 1]
 
+    # Tính ma trận độ tương đồng (Cosine Similarity)
     sim_matrix = np.dot(q_embs, g_embs.T)
 
     unique_g_labels = np.unique(g_labels)
     aps = []
     r1 = 0
 
-    # --- 2. TỐI ƯU TỐC ĐỘ MAX-SCORE ---
+    # --- TỐI ƯU TỐC ĐỘ MAX-SCORE ---
     # Tìm trước index của các mặt thuốc cho mỗi loại (Chỉ chạy 1 lần)
     g_lab_indices = [np.where(g_labels == g_lab)[0] for g_lab in unique_g_labels]
 
     for i in range(len(q_labels)):
         scores = sim_matrix[i]
         
-        # Lấy max score cực nhanh dựa trên list index đã tính sẵn
+        # Lấy max score: Giả sử Gallery có mặt trước score 0.9, mặt sau score 0.2 -> Lấy 0.9
         pill_scores = np.array([np.max(scores[idx]) for idx in g_lab_indices])
 
         sorted_indices = np.argsort(-pill_scores)

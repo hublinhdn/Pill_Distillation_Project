@@ -4,6 +4,43 @@ import torch.nn.functional as F
 import math
 from torchvision import models
 
+class SubCenterArcFace(nn.Module):
+    def __init__(self, in_features, out_features, k=2, s=32.0, m=0.35):
+        super(SubCenterArcFace, self).__init__()
+        self.in_features = in_features
+        self.out_features = out_features
+        self.k = k
+        self.s = s
+        self.m = m
+        
+        # Ma trận trọng số cho K tâm
+        self.weight = nn.Parameter(torch.FloatTensor(out_features * k, in_features))
+        nn.init.xavier_uniform_(self.weight)
+
+        self.cos_m = math.cos(m)
+        self.sin_m = math.sin(m)
+        self.th = math.cos(math.pi - m)
+        self.mm = math.sin(math.pi - m) * m
+
+    def forward(self, embedding, label):
+        cosine = F.linear(F.normalize(embedding), F.normalize(self.weight))
+        
+        # Gom K tâm lại và lấy tâm gần nhất (Max)
+        cosine = cosine.view(-1, self.out_features, self.k)
+        cosine, _ = torch.max(cosine, dim=2) 
+        
+        sine = torch.sqrt(1.0 - torch.pow(cosine, 2))
+        phi = cosine * self.cos_m - sine * self.sin_m
+        phi = torch.where(cosine > self.th, phi, cosine - self.mm)
+
+        one_hot = torch.zeros(cosine.size(), device=embedding.device)
+        one_hot.scatter_(1, label.view(-1, 1).long(), 1)
+        
+        output = (one_hot * phi) + ((1.0 - one_hot) * cosine)
+        output *= self.s
+        
+        return output
+    
 class GeMPooling(nn.Module):
     def __init__(self, p=3.0, eps=1e-6):
         super(GeMPooling, self).__init__()
@@ -66,40 +103,23 @@ class PillTeacher(nn.Module):
         # 2. TỰ ĐỘNG PHÁT HIỆN SỐ KÊNH (IN_CHANNELS) BẰNG DUMMY TENSOR
         # ---------------------------------------------------------
         with torch.no_grad():
-            # Tạo một ảnh giả kích thước [1, 3, 224, 224] (Batch=1, Kênh=3, W=224, H=224)
             dummy_input = torch.zeros(1, 3, 224, 224)
-            # Chạy thử qua backbone để lấy feature map
             dummy_feat = self.features(dummy_input)
-            # Kích thước dummy_feat sẽ là [1, in_channels, H, W]. Ta lấy index số 1.
             in_channels = dummy_feat.shape[1] 
             
         print(f"✅ Backbone [{backbone_type}] tự động detect số kênh đầu ra: {in_channels}")
 
-        # self.reduce_conv = nn.Sequential(
-        #     nn.Conv2d(in_channels, 256, kernel_size=1, bias=False),
-        #     nn.BatchNorm2d(256),
-        #     nn.ReLU(inplace=True)
-        # )
-        # self.mpn_cov = MPNCOV(iterNum=3)
-        # self.fc_projection = nn.Linear(256 * 256, embedding_size, bias=False)
-
-        # --- THÊM GEM POOLING MỚI ---
+        # --- GEM POOLING ---
         self.pool = GeMPooling(p=3.0)
         self.fc_projection = nn.Linear(in_channels, embedding_size, bias=False)
-
         self.bn_head = nn.BatchNorm1d(embedding_size)
 
         # Classifier Heads
-        # self.fc_ce = nn.Linear(embedding_size, num_classes) 
         self.fc_ce = nn.Linear(embedding_size, num_classes, bias=False) # XÓA BIAS
-        self.weight = nn.Parameter(torch.FloatTensor(num_classes, embedding_size))
-        nn.init.xavier_uniform_(self.weight)
-
-        # ArcFace constants
-        self.cos_m = math.cos(m)
-        self.sin_m = math.sin(m)
-        self.th = math.cos(math.pi - m)
-        self.mm = math.sin(math.pi - m) * m
+        
+        # --- SỬ DỤNG SUB-CENTER ARCFACE ---
+        # Đã xóa phần khai báo self.weight cũ đi cho đỡ vướng bận
+        self.arcface = SubCenterArcFace(in_features=embedding_size, out_features=num_classes, k=2, s=self.s, m=self.m)
 
     def forward(self, x, labels=None):
         feat = self.features(x)
@@ -113,26 +133,15 @@ class PillTeacher(nn.Module):
         norm_embedding = F.normalize(embedding, p=2, dim=1)
         
         if labels is not None:
-            # --- SỬA LẠI NHÁNH SCE ---
+            # --- NHÁNH SCE ---
             # Dùng norm_embedding nhân với trọng số đã chuẩn hóa của fc_ce, sau đó nhân với Scale (s)
-            # Điều này tương đương với CosFace, giúp Softmax Loss "cộng hưởng" sức mạnh với ArcFace
             weight_norm = F.normalize(self.fc_ce.weight, p=2, dim=1)
             cosine_sce = F.linear(norm_embedding, weight_norm)
             logits_sce = cosine_sce * self.s
             
-            # --- NHÁNH ARCFACE GIỮ NGUYÊN ---
-            cosine = F.linear(norm_embedding, F.normalize(self.weight))
-            cosine = cosine.clamp(-1.0 + 1e-7, 1.0 - 1e-7) 
-            
-            sine = torch.sqrt(1.0 - torch.pow(cosine, 2))
-            phi = cosine * self.cos_m - sine * self.sin_m 
-            phi = torch.where(cosine > self.th, phi, cosine - self.mm)
-            
-            one_hot = torch.zeros(cosine.size(), device=x.device)
-            one_hot.scatter_(1, labels.view(-1, 1).long(), 1)
-            
-            logits_csce = (one_hot * phi) + ((1.0 - one_hot) * cosine)
-            logits_csce *= self.s
+            # --- NHÁNH SUB-CENTER ARCFACE ---
+            # Code cũ tính tay rất dài đã được thay bằng 1 dòng gọi module
+            logits_csce = self.arcface(norm_embedding, labels)
             
             return logits_sce, logits_csce, norm_embedding
         

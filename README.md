@@ -23,20 +23,19 @@ L_CONTRASTIVE = 1.0 # Trọng số Contrastive Loss
 resnet50 (1, 0.1, 1, 1): 0.61
 resnet50(1,1, 0.2, 1) + GemPooling + m=0.35 (arcface) + CosineAnnealingLR 
 + size 384 + correct CE embedding + correct class number count: .6763
-
 resnet50(1,1, 1, 1) + GemPooling + m=0.35 (arcface) + CosineAnnealingLR 
 + size 384 + correct CE embedding + 100 epoch: 0.65 ==> rollback
 
 convnext_base(1,1, 1, 1) + GemPooling + m=0.35 (arcface) + CosineAnnealingLR 
 + size 384 + correct CE embedding + 100 epoch: 0.762
 
-convnext_base(1,0.2, 1, 1) + 100 epoch: 
+resnet50(1,1, 1, 1) + GemPooling + SubCenterArcFace + 60 epoch: 
 
 ## Run train_teacher_cv.py
 
-tmux new -s train_teacher_cv -d "bash -lc '
-python pipelines/train_teacher_cv.py --backbone convnext_base \
-|& tee -a logs/train_teacher_cv_$(date +%F_%H%M%S).log
+tmux new -s train_resnet50 -d "bash -lc '
+python pipelines/train_teacher_cv.py --backbone resnet50 \
+|& tee -a logs/train_resnet50_cv_$(date +%F_%H%M%S).log
 '"
 
 
