@@ -20,15 +20,15 @@ from utils.evaluator import evaluate_retrieval
 from utils.data_utils import load_epill_full_data
 
 def train_one_fold(args, f_idx, num_classes, df_train, df_val, df_ref, device):
-    # --- 1. CẤU HÌNH HỆ SỐ LOSS (HẠ NHIỆT ARCFACE) ---
+    # --- 1. CẤU HÌNH HỆ SỐ LOSS (HẠ NHIỆT ARCFACE ĐỂ CHỐNG ÉP UỔNG MẶT TRƠN) ---
     L_SCE = 1.0        
-    L_CSCE = 1.0       # Tăng lên 1.0 vì Sub-Center ArcFace đã giải quyết xung đột
+    L_CSCE = 0.2       # QUAY VỀ 0.2 (Chỉ đóng vai trò hỗ trợ, không phạt gắt)
     L_TRIPLET = 1.0    
     L_CONTRASTIVE = 1.0
     
     # --- 2. CHIẾN THUẬT BATCH CHỐNG OOM ---
-    n_classes, n_samples = 8, 2  # Batch size = 16 ảnh
-    accumulation_steps = 8       # Effective batch size = 128
+    n_classes_batch, n_samples = 8, 2  # Batch size = 16 ảnh
+    accumulation_steps = 8             # Effective batch size = 128
     
     # --- 3. AUGMENTATION (Độ phân giải cao 384x384) ---
     train_transform = transforms.Compose([
@@ -49,11 +49,10 @@ def train_one_fold(args, f_idx, num_classes, df_train, df_val, df_ref, device):
         transforms.Normalize(mean=[0.485, 0.456, 0.406], std=[0.229, 0.224, 0.225]),
     ])
 
-    # --- 4. DATALOADER ---
+    # --- 4. DATALOADER (SỬ DỤNG 9804 SUB-CLASSES) ---
     train_loader = DataLoader(
         PillDataset(df_train, train_transform), 
-        # SỬA LỖI: Dùng label_idx (4902 classes) thay vì sub_label_idx để gom mẫu
-        batch_sampler=BalancedBatchSampler(df_train['label_idx'].values, n_classes, n_samples),
+        batch_sampler=BalancedBatchSampler(df_train['sub_label_idx'].values, n_classes_batch, n_samples),
         num_workers=4, pin_memory=True
     )
     
@@ -71,7 +70,6 @@ def train_one_fold(args, f_idx, num_classes, df_train, df_val, df_ref, device):
     criterion_contrastive = losses.ContrastiveLoss(pos_margin=0, neg_margin=1)
     miner = miners.TripletMarginMiner(margin=0.2, type_of_triplets="semihard")
 
-
     # --- 7. TÁCH LEARNING RATE (DIFFERENTIAL LR) & AMP ---
     backbone_params = []
     head_params = []
@@ -81,13 +79,12 @@ def train_one_fold(args, f_idx, num_classes, df_train, df_val, df_ref, device):
         else:
             head_params.append(param)
 
-    # Backbone học chậm (3e-5), Head học nhanh (3e-4)
     optimizer = torch.optim.AdamW([
         {'params': backbone_params, 'lr': 3e-5}, 
         {'params': head_params, 'lr': 3e-4}
     ], weight_decay=5e-2)
     
-    TOTAL_EPOCHS = 60 # Set 60 epoch để mạng có thời gian tìm 2 tâm K=2
+    TOTAL_EPOCHS = 60 
     scheduler = torch.optim.lr_scheduler.CosineAnnealingLR(
         optimizer, 
         T_max=TOTAL_EPOCHS, 
@@ -97,7 +94,7 @@ def train_one_fold(args, f_idx, num_classes, df_train, df_val, df_ref, device):
     scaler = torch.amp.GradScaler('cuda')
 
     best_val_map = 0.0
-    print(f"🚀 Huấn luyện Fold {f_idx} | {TOTAL_EPOCHS} Epochs | 384x384 | Sub-Center ArcFace K=2 | AMP...")
+    print(f"🚀 Huấn luyện Fold {f_idx} | {TOTAL_EPOCHS} Epochs | 384x384 | ArcFace L=0.2 | Tách 2 mặt | AMP...")
 
     # --- 8. VÒNG LẶP HUẤN LUYỆN ---
     for epoch in range(1, TOTAL_EPOCHS + 1):
@@ -107,23 +104,22 @@ def train_one_fold(args, f_idx, num_classes, df_train, df_val, df_ref, device):
         
         optimizer.zero_grad()
         
-        for i, (imgs, _, labels, _) in enumerate(pbar):
+        for i, (imgs, sub_labels, labels, _) in enumerate(pbar):
             imgs = imgs.to(device)
-            labels = labels.to(device).long()
+            # DÙNG SUB_LABELS LÀM MỤC TIÊU TỐI THƯỢNG CHO MỌI LOSS
+            sub_labels = sub_labels.to(device).long()
 
-            # CHẠY FORWARD PASS VỚI AMP (Cú pháp mới không bị báo vàng)
             with torch.amp.autocast('cuda'):
-                logits_sce, logits_csce, norm_embedding = model(imgs, labels=labels)
+                logits_sce, logits_csce, norm_embedding = model(imgs, labels=sub_labels)
 
-                loss_sce = criterion_sce(logits_sce, labels)
-                loss_csce = criterion_sce(logits_csce, labels)
-                hard_pairs = miner(norm_embedding, labels)
-                loss_triplet = criterion_triplet(norm_embedding, labels, hard_pairs)
-                loss_contrastive = criterion_contrastive(norm_embedding, labels)
+                loss_sce = criterion_sce(logits_sce, sub_labels)
+                loss_csce = criterion_sce(logits_csce, sub_labels)
+                hard_pairs = miner(norm_embedding, sub_labels)
+                loss_triplet = criterion_triplet(norm_embedding, sub_labels, hard_pairs)
+                loss_contrastive = criterion_contrastive(norm_embedding, sub_labels)
 
                 loss = (L_SCE * loss_sce + L_CSCE * loss_csce + L_TRIPLET * loss_triplet + L_CONTRASTIVE * loss_contrastive) / accumulation_steps
             
-            # BACKWARD VÀ CẬP NHẬT TRỌNG SỐ BẰNG SCALER
             scaler.scale(loss).backward()
 
             if (i + 1) % accumulation_steps == 0 or (i + 1) == len(train_loader):
@@ -142,12 +138,9 @@ def train_one_fold(args, f_idx, num_classes, df_train, df_val, df_ref, device):
                 'LR_H': f"{lr_head:.1e}", 
                 'Best': f"{best_val_map:.3f}"
             })
-            
 
-        # Scheduler giảm LR ở cuối mỗi Epoch
         scheduler.step()
 
-        # --- ĐÁNH GIÁ (EVALUATION) MỖI 5 EPOCH ---
         if (epoch % 5 == 0) or (epoch > TOTAL_EPOCHS - 10):
             val_metrics = evaluate_retrieval(model, val_loader, device)
             val_map = val_metrics['mAP']
@@ -170,17 +163,13 @@ def main():
 
     device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
     
-    # Load data
     df_all = load_epill_full_data()
     
-    # 3. Lấy tổng số classes (4902) thay vì sub-classes (9804)
-    total_classes = df_all['label_idx'].nunique()
-    print(f"✅ Đã chuẩn hóa nhãn! Bắt đầu huấn luyện với {total_classes} Classes Gốc.")    # ----------------------
+    # TRỞ VỀ DÙNG 9804 SUB-CLASSES
+    total_sub_classes = df_all['sub_label_idx'].nunique()
+    print(f"✅ Đã chuẩn hóa nhãn! Bắt đầu huấn luyện với {total_sub_classes} Sub-Classes (Tách 2 mặt).")
 
-    # FIX LỖI DATA SPLIT: Danh sách tất cả các fold hợp lệ để train
     cv_folds_all = [0, 1, 2, 3] 
-    
-    # Chỉ định fold muốn chạy (ví dụ chạy thử fold 0)
     folds_to_run = [0] 
 
     results_summary = []
@@ -188,23 +177,16 @@ def main():
     for fold in folds_to_run:
         print(f"\n🚀 Training Fold {fold}...")
         
-        # Tập Reference (Gallery) - Luôn dùng cho mọi fold
         df_ref_gallery = df_all[df_all['is_ref'] == 1].reset_index(drop=True)
-        
-        # Tập Validation (Consumer)
         df_val = df_all[(df_all['fold'] == fold) & (df_all['is_ref'] == 0)].reset_index(drop=True)
-        
-        # Tập Train (Consumer) - Lấy các ảnh thuộc cv_folds_all nhưng khác fold hiện tại
         cond_cons = (df_all['fold'].isin(cv_folds_all)) & (df_all['fold'] != fold) & (df_all['is_ref'] == 0)
         
-        # Đảm bảo Train set chỉ chứa các loại thuốc có xuất hiện trong gallery
         train_labels = df_all[cond_cons]['label_idx'].unique()
         cond_ref = (df_all['is_ref'] == 1) & (df_all['label_idx'].isin(train_labels))
         
         df_train = df_all[cond_cons | cond_ref].reset_index(drop=True)
         
-        # Chạy huấn luyện
-        best_map = train_one_fold(args, fold, total_classes, df_train, df_val, df_ref_gallery, device)
+        best_map = train_one_fold(args, fold, total_sub_classes, df_train, df_val, df_ref_gallery, device)
         
         results_summary.append({
             'fold': fold,
@@ -212,7 +194,6 @@ def main():
         })
         print(f"✅ Fold {fold} Finished. Best mAP: {best_map:.4f}\n")
 
-    # Xuất Report
     os.makedirs("reports", exist_ok=True)
     report_path = f"reports/final_report_{args.backbone}.txt"
     with open(report_path, "w", encoding="utf-8") as f:
