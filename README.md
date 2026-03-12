@@ -28,10 +28,13 @@ resnet50(1,1, 0.2, 1) + GemPooling + m=0.35 (arcface) + CosineAnnealingLR + size
 resnet50(1,1, 0.2, 1) + GemPooling + m=0.35 (arcface) + CosineAnnealingLR 
 + size 384 + correct CE embedding + correct class number count: .6763
 
+resnet50(1,1, 1, 1) + GemPooling + m=0.35 (arcface) + CosineAnnealingLR 
++ size 384 + correct CE embedding + 100 epoch: 0.65
+
 ## Run train_teacher_cv.py
 
 tmux new -s train_teacher_cv -d "bash -lc '
-python pipelines/train_teacher_cv.py \
+python pipelines/train_teacher_cv.py --backbone convnext_base \
 |& tee -a logs/train_teacher_cv_$(date +%F_%H%M%S).log
 '"
 

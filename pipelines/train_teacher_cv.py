@@ -22,7 +22,7 @@ from utils.data_utils import load_epill_full_data
 def train_one_fold(args, f_idx, num_classes, df_train, df_val, df_ref, device):
     # --- 1. CẤU HÌNH HỆ SỐ LOSS (HẠ NHIỆT ARCFACE) ---
     L_SCE = 1.0        
-    L_CSCE = 1.0       # ArcFace chỉ hỗ trợ, không ép buộc gây Overfit
+    L_CSCE = 0.2       # ArcFace chỉ hỗ trợ, không ép buộc gây Overfit
     L_TRIPLET = 1.0    
     L_CONTRASTIVE = 1.0 
     
@@ -85,7 +85,7 @@ def train_one_fold(args, f_idx, num_classes, df_train, df_val, df_ref, device):
         {'params': head_params, 'lr': 3e-4}
     ], weight_decay=5e-2)
     
-    TOTAL_EPOCHS = 100 # Rút ngắn chu kỳ để chốt hạ điểm rơi phong độ
+    TOTAL_EPOCHS = 50 # Rút ngắn chu kỳ để chốt hạ điểm rơi phong độ
     scheduler = torch.optim.lr_scheduler.CosineAnnealingLR(
         optimizer, 
         T_max=TOTAL_EPOCHS, 
