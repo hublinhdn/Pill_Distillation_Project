@@ -19,8 +19,12 @@ L_SCE = 1.0        # Trọng số Softmax Cross Entropy
 L_CSCE = 0.2       # Trọng số ArcFace (Benchmark dùng 0.1)
 L_TRIPLET = 1.0    # Trọng số Triplet Loss
 L_CONTRASTIVE = 1.0 # Trọng số Contrastive Loss
+
 resnet50 (1, 0.1, 1, 1): 0.61
-resnet50(1,0.2, 1, 1): 
+resnet50(1,0.2, 1, 1) + mpn cov + m=0.5 (arcface): 0.65
+resnet50(1,1, 1, 1) + GemPooling + m=0.5 (arcface): 0.707
+resnet50(1,1, 1, 1) + GemPooling + m=0.35 (arcface) + OneCycleLR: 
+
 ## Run train_teacher_cv.py
 
 tmux new -s train_teacher_cv -d "bash -lc '
