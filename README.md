@@ -21,15 +21,16 @@ L_TRIPLET = 1.0    # Trọng số Triplet Loss
 L_CONTRASTIVE = 1.0 # Trọng số Contrastive Loss
 
 resnet50 (1, 0.1, 1, 1): 0.61
-resnet50(1,0.2, 1, 1) + mpn cov + m=0.5 (arcface): 0.65
-resnet50(1,1, 1, 1) + GemPooling + m=0.5 (arcface): 0.707
-resnet50(1,1, 1, 1) + GemPooling + m=0.35 (arcface) + OneCycleLR: 0.68
-resnet50(1,1, 0.2, 1) + GemPooling + m=0.35 (arcface) + CosineAnnealingLR + size 384: 0.697
 resnet50(1,1, 0.2, 1) + GemPooling + m=0.35 (arcface) + CosineAnnealingLR 
 + size 384 + correct CE embedding + correct class number count: .6763
 
 resnet50(1,1, 1, 1) + GemPooling + m=0.35 (arcface) + CosineAnnealingLR 
-+ size 384 + correct CE embedding + 100 epoch: 0.65
++ size 384 + correct CE embedding + 100 epoch: 0.65 ==> rollback
+
+convnext_base(1,1, 1, 1) + GemPooling + m=0.35 (arcface) + CosineAnnealingLR 
++ size 384 + correct CE embedding + 100 epoch: 0.762
+
+convnext_base(1,0.2, 1, 1) + 100 epoch: 
 
 ## Run train_teacher_cv.py
 
