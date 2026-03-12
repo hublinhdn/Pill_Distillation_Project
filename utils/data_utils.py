@@ -15,8 +15,10 @@ def load_epill_full_data():
     if not os.path.exists(all_csv):
         raise FileNotFoundError(f"Không tìm thấy file: {all_csv}")
     
-    # Ép kiểu label_code_id thành string ngay từ khi load
-    df_all = pd.read_csv(all_csv, dtype={'label_code_id': str})
+    # Ép kiểu pilltype_id thành string ngay từ khi load
+    df_all = pd.read_csv(all_csv, dtype={'pilltype_id': str})
+    # Dọn dẹp chuỗi (đề phòng pandas tự thêm đuôi .0 vào cuối mã ID)
+    df_all['pilltype_id'] = df_all['pilltype_id'].astype(str).str.replace(r'\.0$', '', regex=True).str.strip()
     
     # 2. XỬ LÝ NHÃN (LABEL ENCODING)
     if os.path.exists(label_path):
@@ -25,23 +27,35 @@ def load_epill_full_data():
             classes = [line.strip() for line in f.readlines() if line.strip()]
         
         # Lấy danh sách nhãn thực tế từ CSV
-        actual_labels = df_all['label_code_id'].unique().tolist()
-        
-        # Tìm các nhãn có trong CSV nhưng thiếu trong file .txt
+        actual_labels = df_all['pilltype_id'].unique().tolist()
+
+        # Lọc ra danh sách khớp và danh sách thừa
+        matched_labels = [l for l in actual_labels if l in classes]
         extra_labels = [l for l in actual_labels if l not in classes]
-        
-        # Gộp lại: Nhãn chuẩn của bài báo đứng trước, nhãn mới đứng sau
+
         full_classes = classes + sorted(extra_labels)
-        
-        # Gán label_idx
-        df_all['label_idx'] = pd.Categorical(df_all['label_code_id'], categories=full_classes).codes
-        
-        print(f"📊 Đã khớp {len(classes)} nhãn chuẩn bài báo.")
+        df_all['label_idx'] = pd.Categorical(df_all['pilltype_id'], categories=full_classes).codes
+
+        # IN LOG CHUẨN XÁC: Cho biết có bao nhiêu nhãn thực sự khớp
+        print(f"📊 Đã khớp {len(matched_labels)}/{len(classes)} nhãn chuẩn bài báo.")
         if len(extra_labels) > 0:
             print(f"➕ Đã bổ sung {len(extra_labels)} nhãn mới phát hiện trong CSV.")
+        
+        # # Tìm các nhãn có trong CSV nhưng thiếu trong file .txt
+        # extra_labels = [l for l in actual_labels if l not in classes]
+        
+        # # Gộp lại: Nhãn chuẩn của bài báo đứng trước, nhãn mới đứng sau
+        # full_classes = classes + sorted(extra_labels)
+        
+        # Gán label_idx
+        # df_all['label_idx'] = pd.Categorical(df_all['label_code_id'], categories=full_classes).codes
+        
+        # print(f"📊 Đã khớp {len(classes)} nhãn chuẩn bài báo.")
+        # if len(extra_labels) > 0:
+        #     print(f"➕ Đã bổ sung {len(extra_labels)} nhãn mới phát hiện trong CSV.")
     else:
         print(f"⚠️ Không tìm thấy {label_path}. Đang tạo nhãn bằng factorize.")
-        df_all['label_idx'], _ = pd.factorize(df_all['label_code_id'])
+        df_all['label_idx'], _ = pd.factorize(df_all['pilltype_id'])
 
     # 3. GÁN FOLD (Giữ nguyên logic chuẩn của bài báo)
     df_all['fold'] = -1 
@@ -75,6 +89,6 @@ def load_epill_full_data():
 if __name__ == "__main__":
     df = load_epill_full_data()
     if len(df) > 0:
-        print(df[['image_path', 'label_code_id', 'label_idx', 'is_ref', 'fold']].head())
+        print(df[['image_path', 'pilltype_id', 'label_idx', 'is_ref', 'fold']].head())
     else:
         print("❌ Lỗi: DataFrame vẫn trống!")

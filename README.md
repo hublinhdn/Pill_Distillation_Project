@@ -25,6 +25,7 @@ resnet50(1,0.2, 1, 1) + mpn cov + m=0.5 (arcface): 0.65
 resnet50(1,1, 1, 1) + GemPooling + m=0.5 (arcface): 0.707
 resnet50(1,1, 1, 1) + GemPooling + m=0.35 (arcface) + OneCycleLR: 0.68
 resnet50(1,1, 0.2, 1) + GemPooling + m=0.35 (arcface) + CosineAnnealingLR + size 384: 0.697
+resnet50(1,1, 0.2, 1) + GemPooling + m=0.35 (arcface) + CosineAnnealingLR + size 384 + correct CE embedding: 
 
 ## Run train_teacher_cv.py
 
