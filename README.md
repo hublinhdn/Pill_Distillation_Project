@@ -33,11 +33,11 @@ convnext_base(1,1, 1, 1) + GemPooling + m=0.35 (arcface) + CosineAnnealingLR
 
 convnext_base (1, 0.2, 1, 1): -
 
-
+convnext_large: Khong load nổi với size 448x448
 ## Run train_teacher_cv.py
 
 tmux new -s train_multi -d "bash -lc '
-python pipelines/train_teacher_cv.py --backbone convnext_large,convnext_base,resnet101,resnet50,mobilenet_v3_large,resnet18 \
+python pipelines/train_teacher_cv.py --backbone resnet101,convnext_base,resnet50,mobilenet_v3_large,resnet18 \
 |& tee -a logs/train_multi_cv_$(date +%F_%H%M%S).log
 '"
 
