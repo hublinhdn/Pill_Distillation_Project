@@ -14,46 +14,41 @@ from pytorch_metric_learning import losses, miners
 
 # Import local modules
 sys.path.append(os.path.abspath(os.path.join(os.path.dirname(__file__), '..')))
-from models.teacher_model import PillRetrievalModel  # Đã đổi tên class theo bản refactor mới nhất
+from models.teacher_model import PillRetrievalModel
 from utils.dataset_loader import PillDataset, BalancedBatchSampler
 from utils.evaluator import evaluate_retrieval
 from utils.data_utils import load_epill_full_data
 
 def train_one_fold(args, f_idx, num_classes, df_train, df_val, df_ref, device):
-    # --- 1. CẤU HÌNH HỆ SỐ LOSS ---
-    L_SCE = 1.0        
-    L_CSCE = 0.2       
-    L_TRIPLET = 1.0    
-    L_CONTRASTIVE = 1.0
+    L_SCE, L_CSCE, L_TRIPLET, L_CONTRASTIVE = 1.0, 0.2, 1.0, 1.0
     
-    # --- 2. CẤU HÌNH ĐỘNG: KÍCH THƯỚC ẢNH & BATCH SIZE THEO BACKBONE ---
+    # ĐỘNG: QUẢN LÝ VRAM THEO BACKBONE
     if 'convnext_large' in args.backbone:
         img_size = 384
-        n_classes_batch, n_samples = 4, 2  # Batch = 8
-        accumulation_steps = 16            # Global Batch = 128
+        n_classes_batch, n_samples = 4, 2  
+        accumulation_steps = 16            
         lr_backbone, lr_head = 2e-5, 2e-4
     elif 'convnext_base' in args.backbone:
         img_size = 384
-        n_classes_batch, n_samples = 8, 2  # Batch = 16
-        accumulation_steps = 8             # Global Batch = 128
+        n_classes_batch, n_samples = 8, 2  
+        accumulation_steps = 8             
         lr_backbone, lr_head = 3e-5, 3e-4
     elif 'resnet101' in args.backbone:
         img_size = 448
-        n_classes_batch, n_samples = 8, 2  # Batch = 16
+        n_classes_batch, n_samples = 8, 2  
         accumulation_steps = 8
         lr_backbone, lr_head = 3e-5, 3e-4
-    else: # resnet50, mobilenet, efficientnet...
+    else: 
         img_size = 448
-        n_classes_batch, n_samples = 16, 2 # Batch = 32
+        n_classes_batch, n_samples = 16, 2 
         accumulation_steps = 4
         lr_backbone, lr_head = 4e-5, 4e-4
 
     print(f"⚙️ Config {args.backbone}: Size={img_size}x{img_size} | Batch={n_classes_batch*n_samples} | Accum={accumulation_steps}")
 
-    # --- 3. AUGMENTATION (TỰ ĐỘNG THÍCH ỨNG SIZE) ---
-    resize_scale = int(img_size * 1.15) # Ví dụ: 384 -> ~441; 448 -> ~515
+    resize_scale = int(img_size * 1.15) 
 
-    # Transform cho Consumer Images (is_ref = 0): Resize to to rồi Crop
+    # DUAL TRANSFORM
     train_transform = transforms.Compose([
         transforms.Resize((resize_scale, resize_scale)),
         transforms.RandomResizedCrop(img_size, scale=(0.8, 1.0)),
@@ -65,7 +60,6 @@ def train_one_fold(args, f_idx, num_classes, df_train, df_val, df_ref, device):
         transforms.RandomErasing(p=0.3, scale=(0.02, 0.1))
     ])
     
-    # Transform cho Lab Images (is_ref = 1): Chỉ Resize, KHÔNG CROP để bảo vệ rìa
     train_transform_ref = transforms.Compose([
         transforms.Resize((img_size, img_size)), 
         transforms.RandomHorizontalFlip(),
@@ -81,7 +75,6 @@ def train_one_fold(args, f_idx, num_classes, df_train, df_val, df_ref, device):
         transforms.Normalize(mean=[0.485, 0.456, 0.406], std=[0.229, 0.224, 0.225]),
     ])
 
-    # --- 4. DATALOADER (SỬ DỤNG DUAL TRANSFORM) ---
     train_loader = DataLoader(
         PillDataset(df_train, transform=train_transform, transform_ref=train_transform_ref), 
         batch_sampler=BalancedBatchSampler(df_train['sub_label_idx'].values, n_classes_batch, n_samples),
@@ -93,16 +86,13 @@ def train_one_fold(args, f_idx, num_classes, df_train, df_val, df_ref, device):
         batch_size=n_classes_batch * n_samples, shuffle=False, num_workers=4, pin_memory=True
     )
 
-    # --- 5. KHỞI TẠO MÔ HÌNH ---
-    model = PillRetrievalModel(num_classes=num_classes, backbone_type=args.backbone).to(device)
+    model = PillRetrievalModel(num_classes=num_classes, backbone_type=args.backbone,pooling_type=args.pooling).to(device)
 
-    # --- 6. HÀM LOSS VÀ MINER ---
     criterion_sce = nn.CrossEntropyLoss(label_smoothing=0.1)
     criterion_triplet = losses.TripletMarginLoss(margin=0.3)
     criterion_contrastive = losses.ContrastiveLoss(pos_margin=0, neg_margin=1)
     miner = miners.TripletMarginMiner(margin=0.2, type_of_triplets="semihard")
 
-    # --- 7. OPTIMIZER & SCHEDULER ---
     backbone_params = [p for n, p in model.named_parameters() if 'features' in n]
     head_params = [p for n, p in model.named_parameters() if 'features' not in n]
 
@@ -117,7 +107,6 @@ def train_one_fold(args, f_idx, num_classes, df_train, df_val, df_ref, device):
 
     best_val_map = 0.0
 
-    # --- 8. VÒNG LẶP HUẤN LUYỆN ---
     for epoch in range(1, TOTAL_EPOCHS + 1):
         model.train()
         total_loss = 0
@@ -155,24 +144,24 @@ def train_one_fold(args, f_idx, num_classes, df_train, df_val, df_ref, device):
         scheduler.step()
 
         if (epoch % 5 == 0) or (epoch > TOTAL_EPOCHS - 10):
-            val_metrics = evaluate_retrieval(model, val_loader, device)
+            # Mặc định sử dụng Both Sides để lưu Model tốt nhất
+            val_metrics = evaluate_retrieval(model, val_loader, device, flag_both_side=True)
             val_map = val_metrics['mAP']
             print(f"📊 Epoch {epoch} mAP: {val_map:.4f} (Rank-1: {val_metrics['Rank-1']:.4f})")
             
             if val_map > best_val_map:
                 best_val_map = val_map
                 os.makedirs('weights', exist_ok=True)
-                torch.save(model.state_dict(), f"weights/best_teacher_{args.backbone}_fold{f_idx}.pth")
+                torch.save(model.state_dict(), f"weights/best_{args.backbone}_{args.pooling}_fold{f_idx}.pth")
                 
     return best_val_map
 
 def main():
     parser = argparse.ArgumentParser()
-    # Chạy hàng loạt các backbone cách nhau bởi dấu phẩy
     parser.add_argument('--backbone', type=str, default='convnext_base,resnet50,mobilenet_v3_large')
+    parser.add_argument('--pooling', type=str, default='gem', choices=['gem', 'mpncov']) # <-- Thêm dòng này
     args = parser.parse_args()
 
-    # Thêm cờ chống phân mảnh VRAM vào thẳng code Python để chắc chắn nó kích hoạt
     os.environ["PYTORCH_CUDA_ALLOC_CONF"] = "expandable_segments:True"
     device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
     
@@ -192,17 +181,17 @@ def main():
     print(f"🚀 BẮT ĐẦU CHIẾN DỊCH VỚI: {backbone_list}")
     
     results_summary = {}
+    pooling = args.pooling
 
     for current_backbone in backbone_list:
         print(f"\n{'='*60}")
-        print(f"🔥 ĐANG HUẤN LUYỆN: {current_backbone.upper()}")
+        print(f"🔥 ĐANG HUẤN LUYỆN: {current_backbone.upper()} - pooling: {pooling}")
         print(f"{'='*60}")
         
         args.backbone = current_backbone
         best_map = train_one_fold(args, fold, total_sub_classes, df_train, df_val, df_ref_gallery, device)
         results_summary[current_backbone] = best_map
         
-        # Dọn dẹp RAM triệt để trước khi sang Backbone mới
         gc.collect()
         torch.cuda.empty_cache()
 
@@ -212,10 +201,12 @@ def main():
     for bb, mAP in results_summary.items():
         print(f" - {bb.ljust(20)}: Best mAP = {mAP:.4f}")
     print("="*50)
+
+    
     
     os.makedirs("reports", exist_ok=True)
-    with open("reports/batch_experiment_summary.txt", "w") as f:
-        f.write("Batch Experiment Results\n")
+    with open(f"reports/batch_experiment_{pooling}_summary.txt", "w") as f:
+        f.write(f"Batch Experiment Results for pooling: {pooling}\n")
         for bb, mAP in results_summary.items():
             f.write(f"{bb}: {mAP:.4f}\n")
 
