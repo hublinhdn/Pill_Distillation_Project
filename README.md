@@ -52,6 +52,15 @@ convnext_base, convnext_large: Khong load nổi với size 448x448
 NEXT: teacher - student: convnext_base - resnet18
 1. train again student baseline with size 384
 2. train kd student
+🏆 BẢNG VÀNG KẾT QUẢ KNOWLEDGE DISTILLATION
+🌟🌟🌟🌟🌟🌟🌟🌟🌟🌟🌟🌟🌟🌟🌟🌟🌟🌟🌟🌟🌟🌟🌟🌟🌟
+- Phase 1 - MSE                 : mAP = 0.7974
+- Phase 1 - Cosine              : mAP = 0.8279 (Alpha = 50)
+- Phase 1 - KL Div              : mAP = 0.8100
+- Phase 2 - Cosine Low Alpha    : mAP = 0.8409 (Alpha = 10)  ==> BEST
+- Phase 2 - Cosine High Alpha   : mAP = 0.8339 (Alpha = 100)
+- Phase 3 - Hybrid Cocktail     : mAP = 0.8249 (Alpha = 30 + KL Div)
+
 
 ## Run train_teacher_cv.py
 

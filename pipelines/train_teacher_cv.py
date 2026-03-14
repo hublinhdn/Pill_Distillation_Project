@@ -38,6 +38,11 @@ def train_one_fold(args, f_idx, num_classes, df_train, df_val, df_ref, device):
         n_classes_batch, n_samples = 8, 2  
         accumulation_steps = 8
         lr_backbone, lr_head = 3e-5, 3e-4
+    elif 'resnet18' in args.backbone:
+        img_size = 384
+        n_classes_batch, n_samples = 16, 2 
+        accumulation_steps = 4
+        lr_backbone, lr_head = 4e-5, 4e-4
     else: 
         img_size = 448
         n_classes_batch, n_samples = 16, 2 
