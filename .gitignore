@@ -39,6 +39,10 @@ results/*.pdf
 logs/
 experiments/
 
+# --- Reports ---
+reports/*.*
+reports/
+
 # --- System / OS ---
 # Đặc biệt quan trọng khi bạn dùng MacBook
 .DS_Store
