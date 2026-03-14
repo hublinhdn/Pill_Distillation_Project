@@ -93,7 +93,7 @@ def train_kd_fold(args, f_idx, num_classes, df_train, df_val, df_ref, device):
 
     for epoch in range(1, args.epochs + 1):
         student.train()
-        pbar = tqdm(train_loader, desc=f"KD Fold {f_idx} | Ep {epoch}")
+        pbar = tqdm(train_loader, desc=f"KD Fold {f_idx} | Ep {epoch} | Best {best_val_map}")
         optimizer.zero_grad()
         
         for i, (imgs, sub_labels, labels, _) in enumerate(pbar):
@@ -158,7 +158,8 @@ def train_kd_fold(args, f_idx, num_classes, df_train, df_val, df_ref, device):
             if val_map > best_val_map:
                 best_val_map = val_map
                 os.makedirs('weights', exist_ok=True)
-                torch.save(student.state_dict(), f"weights/best_kd_{args.student}_{args.kd_type}_fold{f_idx}.pth")
+                torch.save(student.state_dict(), f"weights/best_kd_{args.student}_kd_type{args.kd_type}_alpha{args.alpha}_fold{f_idx}.pth")
+    return best_val_map
 
 def main():
     parser = argparse.ArgumentParser()

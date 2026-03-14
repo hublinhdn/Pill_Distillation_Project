@@ -21,16 +21,16 @@ def main():
     # --- DANH SÁCH CÁC TRẬN ĐÁNH (EXPERIMENTS) ---
     experiments = [
         # Giai đoạn 1: Tìm Tâm Pháp (Alpha tiêu chuẩn)
-        {"name": "Phase 1 - MSE", "kd_type": "mse", "alpha": 50.0, "temp": 4.0},
-        {"name": "Phase 1 - Cosine", "kd_type": "cosine", "alpha": 50.0, "temp": 4.0},
-        {"name": "Phase 1 - KL Div", "kd_type": "kl", "alpha": 1.0, "temp": 4.0},
+        # {"name": "Phase 1 - MSE", "kd_type": "mse", "alpha": 50.0, "temp": 4.0},
+        # {"name": "Phase 1 - Cosine", "kd_type": "cosine", "alpha": 50.0, "temp": 4.0},
+        # {"name": "Phase 1 - KL Div", "kd_type": "kl", "alpha": 1.0, "temp": 4.0},
         
         # Giai đoạn 2: Tìm Alpha "Điểm Ngọt" (Giả định Cosine hoặc MSE đang tốt, ta test thêm hệ số)
         {"name": "Phase 2 - Cosine Low Alpha", "kd_type": "cosine", "alpha": 10.0, "temp": 4.0},
-        {"name": "Phase 2 - Cosine High Alpha", "kd_type": "cosine", "alpha": 100.0, "temp": 4.0},
+        # {"name": "Phase 2 - Cosine High Alpha", "kd_type": "cosine", "alpha": 100.0, "temp": 4.0},
         
         # Giai đoạn 3: Cuộc tấn công tổng lực (Hybrid)
-        {"name": "Phase 3 - Hybrid Cocktail", "kd_type": "hybrid", "alpha": 30.0, "temp": 4.0},
+        # {"name": "Phase 3 - Hybrid Cocktail", "kd_type": "hybrid", "alpha": 30.0, "temp": 4.0},
     ]
 
     results = []
