@@ -49,7 +49,7 @@ def build_ogyei_df(ogyei_root, use_all_train_as_gallery=True, n_refs=2):
             if class_id == -1:
                 continue # Bỏ qua nếu ảnh không có file nhãn hợp lệ
                 
-            if split == 'train':
+            if split == 'valid':
                 # Gom vào từ điển để lát nữa chia Gallery/Query
                 if class_id not in train_class_dict:
                     train_class_dict[class_id] = []
@@ -59,8 +59,8 @@ def build_ogyei_df(ogyei_root, use_all_train_as_gallery=True, n_refs=2):
                     'label_idx': class_id,
                     'label_name': f"Class_{class_id}"
                 })
-            else:
-                # Tập Valid/Test mặc định 100% là Query (is_ref = 0)
+            elif split == 'test':
+                # Tập Test mặc định 100% là Query (is_ref = 0)
                 data.append({
                     'image_path': img_path,
                     'txt_path': txt_path,
@@ -68,6 +68,9 @@ def build_ogyei_df(ogyei_root, use_all_train_as_gallery=True, n_refs=2):
                     'is_ref': 0,
                     'label_name': f"Class_{class_id}"
                 })
+                
+            else:
+                pass
 
     # Xử lý tập Train: Chia Gallery / Query
     for class_id, items in train_class_dict.items():
