@@ -12,19 +12,34 @@ sys.path.append(os.path.abspath(os.path.join(os.path.dirname(__file__), '..')))
 from models.teacher_model import PillRetrievalModel
 from utils.dataset_ogyei import build_ogyei_df_strict_split, OGYEICropDataset, LetterboxResize
 
-def main():
-    DEVICE = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
+USE_TRAIN_AS_GALLERY = True # use valid (6) or train(28) as gallery for query
+gallery_split = 'train' if USE_TRAIN_AS_GALLERY else 'valid' 
+# ⚠️ HÃY ĐẢM BẢO ĐƯỜNG DẪN NÀY CHÍNH XÁC VỚI SERVER CỦA BẠN
+OGYEI_ROOT = os.path.join('data/raw/OGYEIv2/ogyeiv2', 'ogyeiv2')
+OUTPUT_DIR = os.path.join(os.getcwd(), 'reports', 'error_analysis')
+CLASS_TRAINNING = 9804 # train by ePillID as 2 side 9804
+
+def do_visualize_plan(name='student_kd_resnet18', backbone='resnet18', weight='weights/best_kd_resnet18_kd_typecosine_alpha10.0_fold0.pth'):
+    # DEVICE = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
+    if torch.cuda.is_available():
+        DEVICE = torch.device('cuda')
+        device_type = 'cuda'
+    elif torch.backends.mps.is_available(): # Dành cho MacBook chip M1/M2/M3
+        DEVICE = torch.device('mps')
+        device_type = 'mps'
+    else: # Dành cho MacBook chip Intel
+        DEVICE = torch.device('cpu')
+        device_type = 'cpu'
+
     
-    # ⚠️ HÃY ĐẢM BẢO ĐƯỜNG DẪN NÀY CHÍNH XÁC VỚI SERVER CỦA BẠN
-    OGYEI_ROOT = os.path.join('data/raw/OGYEIv2/ogyeiv2', 'ogyeiv2')
-    # BACKBONE = "resnet18"
-    # MODEL_PATH = "weights/best_kd_resnet18_kd_typecosine_alpha10.0_fold0.pth"
-    BACKBONE = "convnext_base"
-    MODEL_PATH = "weights/best_teacher_convnext_base_fold0.pth"
-    OUTPUT_DIR = os.path.join(os.getcwd(), 'reports', 'error_analysis')
     os.makedirs(OUTPUT_DIR, exist_ok=True)
 
-    df = build_ogyei_df_strict_split(OGYEI_ROOT)
+    # Student KD
+    NAME_TEST = name
+    BACKBONE = backbone
+    MODEL_PATH = weight
+
+    df = build_ogyei_df_strict_split(OGYEI_ROOT, gallery_split = gallery_split)
     if len(df) == 0:
         print("❌ Lỗi: Không tìm thấy dữ liệu. Dừng chương trình.")
         sys.exit(1)
@@ -38,8 +53,8 @@ def main():
     dataset = OGYEICropDataset(df, transform=transform)
     loader = DataLoader(dataset, batch_size=32, shuffle=False)
 
-    print("\n🚀 Đang trích xuất đặc trưng với Student KD...")
-    model = PillRetrievalModel(num_classes=9804, backbone_type=BACKBONE, pooling_type='gem').to(DEVICE)
+    print(f"\n🚀 Đang trích xuất đặc trưng với {NAME_TEST}...")
+    model = PillRetrievalModel(num_classes=CLASS_TRAINNING, backbone_type=BACKBONE, pooling_type='gem').to(DEVICE)
     model.load_state_dict(torch.load(MODEL_PATH, map_location=DEVICE, weights_only=True))
     model.eval()
 
@@ -84,7 +99,8 @@ def main():
     
     if len(error_cases) == 0:
         print("🎉 Chúc mừng! Mô hình không sai ca nào. Không có gì để vẽ.")
-        sys.exit(0)
+        return len(error_cases)
+        # sys.exit(0)
 
     # Chọn ngẫu nhiên tối đa 10 lỗi để vẽ
     random.seed(42)
@@ -94,7 +110,7 @@ def main():
     # Cấu hình lưới vẽ (Grid)
     rows = (num_plots + 1) // 2
     fig, axes = plt.subplots(rows, 4, figsize=(16, 4 * rows))
-    fig.suptitle("Failure Analysis: Teacher Bị Nhầm Lẫn (OGYEIv2)", fontsize=20, fontweight='bold', y=0.98, color='red')
+    fig.suptitle(f"Analysis: {NAME_TEST} on (OGYEIv2) with gallery:{gallery_split} - Failure: {len(error_cases)}", fontsize=20, fontweight='bold', y=0.98, color='red')
 
     # Đảm bảo axes luôn là mảng 2 chiều để dễ index
     if rows == 1: axes = axes.reshape(1, -1)
@@ -102,18 +118,21 @@ def main():
     for i, (q_idx, g_idx, sim, q_lbl, g_lbl) in enumerate(selected_errors):
         img_q = dataset.get_pil_image(q_idx)
         img_g = dataset.get_pil_image(g_idx)
+        img_name_g = dataset.df.iloc[g_idx]['img_name']
+
+        img_name_q = dataset.df.iloc[q_idx]['img_name']
         
         row, col_q = i // 2, (i % 2) * 2
         
         # Vẽ Query (Sự thật)
         axes[row, col_q].imshow(img_q)
-        axes[row, col_q].set_title(f"QUERY (Thực tế)\nClass: {q_lbl}", fontweight='bold')
+        axes[row, col_q].set_title(f"QUERY (Thực tế)\nClass: {q_lbl}\nFile {img_name_q}", fontweight='bold')
         axes[row, col_q].axis('off')
         
         # Vẽ Gallery (Mô hình đoán sai)
         ax_g = axes[row, col_q + 1]
         ax_g.imshow(img_g)
-        ax_g.set_title(f"TOP-1 (Đoán sai)\nClass: {g_lbl} | Sim: {sim:.2f}", color='red', fontweight='bold')
+        ax_g.set_title(f"TOP-1 (Đoán sai)\nClass: {g_lbl} | Sim: {sim:.2f}| \nFile: {img_name_g}", color='red', fontweight='bold')
         for spine in ax_g.spines.values():
             spine.set_edgecolor('red')
             spine.set_linewidth(4)
@@ -124,9 +143,59 @@ def main():
         axes[j // 4, j % 4].axis('off')
 
     plt.tight_layout(rect=[0, 0, 1, 0.95])
-    out_img_path = os.path.join(OUTPUT_DIR, f'{BACKBONE}_ogyei_failures_visual.png')
+    out_img_path = os.path.join(OUTPUT_DIR, f'{NAME_TEST}_ogyei_failures_visual.png')
     plt.savefig(out_img_path, dpi=300, bbox_inches='tight')
     print(f"✅ Đã lưu ảnh Phân tích lỗi tại: {out_img_path}")
+    return len(error_cases)
+
+def generate_report(results, output_dir, output_img_path='failure_comparison.png', output_txt_report='failure_comparison_report.txt'):
+    os.makedirs(output_dir, exist_ok=True)
+    names = [r['name'] for r in results]
+    backbone = [r['backbone'] for r in results]
+    error_count = [r['error_count'] for r in results]
+
+    # --- Vẽ biểu đồ ---
+    plt.figure(figsize=(8, 5)) # Chỉnh kích thước khung hình
+    plt.bar(names, error_count, color='skyblue', edgecolor='navy')
+
+    # 3. Thêm chi tiết (Tiêu đề, nhãn trục)
+    plt.title('Failure Comparison', fontsize=14)
+    plt.xlabel('Num of failure', fontsize=12)
+    plt.ylabel('Backbone', fontsize=12)
+    plt.tight_layout()
+    plt.savefig(os.path.join(output_dir, output_img_path), dpi=300)
+
+    # --- Xuất báo cáo text ---
+    with open(os.path.join(output_dir, output_txt_report), 'w', encoding='utf-8') as f:
+        f.write("="*60 + "\nBÁO CÁO LỖI OGYEIv2 \n" + "="*60 + "\n")
+        f.write(f"{'Tên':<25} | {'Mô hình':<12} | {'Số lỗi':<10}\n" + "-" * 55 + "\n")
+        for r in results:
+            f.write(f"{r['name']:<25} | {r['backbone']:<25} % | {r['error_count']}\n")
+
 
 if __name__ == "__main__":
-    main()
+    visualize_plan = [
+        {
+            "name": "student_kd_resnet18",
+            "backbone":"resnet18",
+            "weight":"weights/best_kd_resnet18_kd_typecosine_alpha10.0_fold0.pth"
+        },
+        {
+            "name": "student_baseline_resnet18",
+            "backbone":"resnet18",
+            "weight":"weights/best_resnet18_gem_fold0.pth"
+        },
+        {
+            "name": "teacher_convnext_base",
+            "backbone":"convnext_base",
+            "weight":"weights/best_teacher_convnext_base_fold0.pth"
+        }
+    ]
+    results = []
+    for plan in visualize_plan:
+        error_count = do_visualize_plan(plan["name"], plan["backbone"], plan["weight"])
+        results.append({'name': plan["name"],'backbone':plan["backbone"], 'error_count': error_count})
+    
+    output_img_path=f'failure_comparison.png'
+    output_txt_report=f'failure_comparison_report.txt'
+    generate_report(results, OUTPUT_DIR, output_img_path=output_img_path, output_txt_report=output_txt_report)

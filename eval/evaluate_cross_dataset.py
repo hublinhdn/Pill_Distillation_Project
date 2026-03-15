@@ -13,6 +13,8 @@ sys.path.append(os.path.abspath(os.path.join(os.path.dirname(__file__), '..')))
 from models.teacher_model import PillRetrievalModel
 from utils.dataset_ogyei import build_ogyei_df_strict_split, OGYEICropDataset, LetterboxResize
 
+USE_TRAIN_AS_GALLERY = True # use valid (6) or train(28) as gallery for query
+
 def evaluate_model(model, dataloader, device):
     model.eval()
     all_feats, all_labels, all_is_ref = [], [], []
@@ -47,7 +49,7 @@ def evaluate_model(model, dataloader, device):
     mAP = (1.0 / ranks[valid_mask]).sum() / len(q_feats)
     return rank1, mAP
 
-def generate_report(results, output_dir):
+def generate_report(results, output_dir, output_img_path='performance_comparison.png', output_txt_report='evaluation_report.txt'):
     os.makedirs(output_dir, exist_ok=True)
     names = [r['name'] for r in results]
     maps = [r['mAP'] for r in results]
@@ -66,17 +68,26 @@ def generate_report(results, output_dir):
     for bar in bars2: ax2.text(bar.get_x() + bar.get_width()/2., bar.get_height() + 1.0, f'{bar.get_height():.2f}%', ha='center', va='bottom', fontweight='bold')
 
     plt.tight_layout()
-    plt.savefig(os.path.join(output_dir, 'performance_comparison.png'), dpi=300)
+    plt.savefig(os.path.join(output_dir, output_img_path), dpi=300)
 
     # --- Xuất báo cáo text ---
-    with open(os.path.join(output_dir, 'evaluation_report.txt'), 'w', encoding='utf-8') as f:
+    with open(os.path.join(output_dir, output_txt_report), 'w', encoding='utf-8') as f:
         f.write("="*60 + "\nBÁO CÁO ĐÁNH GIÁ OGYEIv2 (STRICT SPLIT)\n" + "="*60 + "\n")
         f.write(f"{'Mô hình':<25} | {'Rank-1 (%)':<12} | {'mAP':<10}\n" + "-" * 55 + "\n")
         for r in results:
             f.write(f"{r['name']:<25} | {r['rank1']*100:>10.2f} % | {r['mAP']:>8.4f}\n")
 
-if __name__ == "__main__":
-    DEVICE = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
+def do_cross_check(gallery_split = 'train'):
+# DEVICE = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
+    if torch.cuda.is_available():
+        DEVICE = torch.device('cuda')
+        device_type = 'cuda'
+    elif torch.backends.mps.is_available(): # Dành cho MacBook chip M1/M2/M3
+        DEVICE = torch.device('mps')
+        device_type = 'mps'
+    else: # Dành cho MacBook chip Intel
+        DEVICE = torch.device('cpu')
+        device_type = 'cpu'
     OGYEI_ROOT = os.path.join('data/raw/OGYEIv2/ogyeiv2', 'ogyeiv2') 
     OUTPUT_DIR = os.path.join(os.getcwd(), 'reports', 'ogyei_eval')
 
@@ -92,7 +103,7 @@ if __name__ == "__main__":
         transforms.Normalize([0.485, 0.456, 0.406], [0.229, 0.224, 0.225]),
     ])
 
-    df = build_ogyei_df_strict_split(OGYEI_ROOT)
+    df = build_ogyei_df_strict_split(OGYEI_ROOT,gallery_split=gallery_split)
     loader = DataLoader(OGYEICropDataset(df, transform), batch_size=32, num_workers=4)
 
     results = []
@@ -105,4 +116,13 @@ if __name__ == "__main__":
         del model
         torch.cuda.empty_cache()
 
-    if results: generate_report(results, OUTPUT_DIR)
+    if results: 
+        print(results)
+        output_img_path=f'split_{gallery_split}_performance_comparison.png'
+        output_txt_report=f'split_{gallery_split}_evaluation_report.txt'
+        generate_report(results, OUTPUT_DIR, output_img_path=output_img_path, output_txt_report=output_txt_report)
+if __name__ == "__main__":
+    # gallery_split = 'train' if USE_TRAIN_AS_GALLERY else 'valid' 
+    do_cross_check('train')
+    do_cross_check('valid')
+    

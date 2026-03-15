@@ -11,6 +11,7 @@ from torch.utils.data import DataLoader
 from torchvision import transforms
 from tqdm import tqdm
 from pytorch_metric_learning import losses, miners
+import torchvision.transforms.functional as TF
 
 # Import local modules
 sys.path.append(os.path.abspath(os.path.join(os.path.dirname(__file__), '..')))
@@ -122,17 +123,30 @@ def train_one_fold(args, f_idx, num_classes, df_train, df_val, df_ref, device):
         for i, (imgs, sub_labels, labels, _) in enumerate(pbar):
             imgs = imgs.to(device)
             sub_labels = sub_labels.to(device).long()
+            # 1. Tự động tạo ra phiên bản ảnh Xám ngay trong vòng lặp
+            # Chú ý: Ảnh xám chỉ có 1 kênh màu, ta phải repeat nó lên 3 kênh để đưa vào ResNet
+            imgs_gray = TF.rgb_to_grayscale(imgs, num_output_channels=3)
 
             with torch.amp.autocast('cuda'):
-                logits_sce, logits_csce, norm_embedding = model(imgs, labels=sub_labels)
+                logits_sce, logits_csce, norm_embedding_rgb = model(imgs, labels=sub_labels)
+                _, _, norm_embedding_gray = model(imgs_gray, labels=sub_labels) # Chỉ lấy embedding của ảnh xám
 
                 loss_sce = criterion_sce(logits_sce, sub_labels)
                 loss_csce = criterion_sce(logits_csce, sub_labels)
-                hard_pairs = miner(norm_embedding, sub_labels)
-                loss_triplet = criterion_triplet(norm_embedding, sub_labels, hard_pairs)
-                loss_contrastive = criterion_contrastive(norm_embedding, sub_labels)
+                hard_pairs = miner(norm_embedding_rgb, sub_labels)
+                loss_triplet = criterion_triplet(norm_embedding_rgb, sub_labels, hard_pairs)
+                loss_contrastive = criterion_contrastive(norm_embedding_rgb, sub_labels)
 
-                loss = (L_SCE * loss_sce + L_CSCE * loss_csce + L_TRIPLET * loss_triplet + L_CONTRASTIVE * loss_contrastive) / accumulation_steps
+                # ==================================================
+                # 4. THÊM SHAPE-CONSISTENCY LOSS (Ý TƯỞNG CỦA BẠN)
+                # ==================================================
+                # Ép vector ảnh màu phải giống hệt vector ảnh xám
+                criterion_shape = nn.MSELoss()
+                loss_shape = criterion_shape(norm_embedding_rgb, norm_embedding_gray)
+
+                # 5. Tổng hợp Loss (Thêm hệ số L_SHAPE, ví dụ 1.0)
+                L_SHAPE = 1.0
+                loss = (L_SCE * loss_sce + L_CSCE * loss_csce + L_TRIPLET * loss_triplet + L_CONTRASTIVE * loss_contrastive + L_SHAPE * loss_shape) / accumulation_steps
             
             scaler.scale(loss).backward()
 
@@ -156,8 +170,9 @@ def train_one_fold(args, f_idx, num_classes, df_train, df_val, df_ref, device):
             
             if val_map > best_val_map:
                 best_val_map = val_map
-                os.makedirs('weights', exist_ok=True)
-                torch.save(model.state_dict(), f"weights/best_{args.backbone}_{args.pooling}_fold{f_idx}.pth")
+                folder_weight = 'weights/phase2'
+                os.makedirs(folder_weight, exist_ok=True)
+                torch.save(model.state_dict(), f"{folder_weight}/best_{args.backbone}_{args.pooling}_fold{f_idx}.pth")
                 
     return best_val_map
 
@@ -168,7 +183,16 @@ def main():
     args = parser.parse_args()
 
     os.environ["PYTORCH_CUDA_ALLOC_CONF"] = "expandable_segments:True"
-    device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
+    # device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
+    if torch.cuda.is_available():
+        device = torch.device('cuda')
+        device_type = 'cuda'
+    elif torch.backends.mps.is_available(): # Dành cho MacBook chip M1/M2/M3
+        device = torch.device('mps')
+        device_type = 'mps'
+    else: # Dành cho MacBook chip Intel
+        device = torch.device('cpu')
+        device_type = 'cpu'
     
     df_all = load_epill_full_data()
     total_sub_classes = df_all['sub_label_idx'].nunique()

@@ -1,3 +1,6 @@
+## Tổng quan Hệ thống (System Architecture): 
+- Sơ đồ luồng đi của dữ liệu: 
+từ ảnh gốc => Crop => Backbone => GeM Pooling => L2 Normalization => Matching.
 ## benchmark simple: Try to find who is best teacher, who is student
 L_SCE = 1.0        # Trọng số Softmax Cross Entropy
 L_CSCE = 0.2       # Trọng số ArcFace (Benchmark dùng 0.1)
@@ -39,33 +42,36 @@ convnext_base, convnext_large: Khong load nổi với size 448x448
  - resnet18(1,1, 0.2, 1) + gem + 384           : Best mAP = 0.7583
 
 2. train KD student
-Thứ tự	Loại hình huấn luyện	Cấu hình chi tiết	            Best mAP	Trạng thái
-1	    Baseline	            Không Knowledge Distillation	0.7583	    Điểm sàn
-2	    Phase 1 - MSE	        Alpha 50.0	                    0.7974	    Khá
-3	    Phase 1 - KL Div	    Alpha 1.0	                    0.81	    Tốt
-4	    Phase 2 - Cosine	    Alpha 100.0	                    0.8339	    Rất tốt
-5	    Phase 3 - Hybrid	    Cosine (Alpha 30) + KL	        0.8249	    Không hiệu quả bằng
-6	    Phase 2 - Cosine	    Alpha 10.0	                    0.8409	    🏆 QUÁN QUÂN
+Thứ tự	Loại hình huấn luyện	Cấu hình chi tiết	            Best mAP	  Trạng thái
+1	      Baseline	            -                             	0.7583	    Điểm sàn
+2	      Phase 1 - MSE	        Alpha 50.0	                    0.7974	    Khá
+3	      Phase 1 - KL Div	    Alpha 1.0	                      0.81	      Tốt
+4	      Phase 2 - Cosine	    Alpha 100.0	                    0.8339	    Rất tốt
+5	      Phase 3 - Hybrid	    Cosine (Alpha 30) + KL	        0.8249	    Không hiệu quả bằng
+6	      Phase 2 - Cosine	    Alpha 10.0	                    0.8409	    🏆 QUÁN QUÂN
 
 ## Cross dataset domain: check on OGYEIv2 ( use validation as gallery, test as query) as unseen dataset
 - dataset of OGYEIv2 is 28/6/6 as train/test/valid
+- Eval cross dataset (eval/evalue_cross_dataset.py)
 
-### 1.convert for our is valid => gallery, test => query, ignore train
+### 1.OGYEI valid => gallery, test => query, ignore train
 
 Baseline                  |      Map     |   R1
 Student Baseline          |      78.57 % |   0.8481
 Teacher Model             |      87.65 % |   0.9116
 Student KD (Ours)         |      83.63 % |   0.8823
-============================================================
-PHÂN TÍCH CHUYÊN SÂU (INSIGHTS):
-- Phương pháp KD giúp mô hình ResNet18 tăng tuyệt đối 0.0343 mAP so với Baseline.
-- Tốc độ tăng trưởng tương đối (Relative Gain): +4.04% hiệu năng trên tập dữ liệu ngoại lai.
-- KẾT LUẬN: Mô hình Student KD đã học được đặc trưng tổng quát (Generalization) từ Teacher, vượt trội hoàn toàn so với việc tự học (Baseline) trên miền dữ liệu Unseen.
 
-### 2.convert for our is train => gallery, (test, valid) => query
+### 2.OGYEI train => gallery, (test, valid) => query
 Student Baseline          |      93.75 % |   0.9613
 Teacher Model             |      95.83 % |   0.9744
 Student KD (Ours)         |      95.61 % |   0.9707
+
+### 3. Eval
+- Eval cross dataset (eval/evalue_cross_dataset.py)
+
+
+
+
 
 ## Run train_teacher_cv.py
 

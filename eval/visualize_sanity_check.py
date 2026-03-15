@@ -13,7 +13,16 @@ from models.teacher_model import PillRetrievalModel
 from utils.dataset_ogyei import build_ogyei_df_strict_split, OGYEICropDataset, LetterboxResize
 
 def main():
-    DEVICE = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
+    # DEVICE = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
+    if torch.cuda.is_available():
+        DEVICE = torch.device('cuda')
+        device_type = 'cuda'
+    elif torch.backends.mps.is_available(): # Dành cho MacBook chip M1/M2/M3
+        DEVICE = torch.device('mps')
+        device_type = 'mps'
+    else: # Dành cho MacBook chip Intel
+        DEVICE = torch.device('cpu')
+        device_type = 'cpu'
     OGYEI_ROOT = os.path.join('data/raw/OGYEIv2/ogyeiv2', 'ogyeiv2') 
     MODEL_PATH = "weights/best_kd_resnet18_kd_typecosine_alpha10.0_fold0.pth" 
     OUTPUT_DIR = os.path.join(os.getcwd(), 'reports', 'ogyei_eval')

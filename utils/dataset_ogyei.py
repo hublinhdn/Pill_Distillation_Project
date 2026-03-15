@@ -1,6 +1,7 @@
 import os
 import glob
 import pandas as pd
+import re
 from PIL import Image, ImageOps
 from torch.utils.data import Dataset
 
@@ -18,16 +19,19 @@ class LetterboxResize:
         return ImageOps.expand(img, padding, fill=(127, 127, 127))
 
 # --- 2. HÀM BUILD DATAFRAME CHUẨN (STRICT SPLIT) ---
-def build_ogyei_df_strict_split(ogyei_root):
+def build_ogyei_df_strict_split(ogyei_root, gallery_split = 'valid', query_split=['test'], both_size = False):
     """
     Valid -> Gallery (is_ref = 1)
     Test -> Query (is_ref = 0)
     Bỏ qua Train để đánh giá khắt khe nhất.
     """
     data = []
-    splits = ['valid', 'test'] 
+    splits = ['train','valid', 'test']
     
     for split in splits:
+        if (split != gallery_split) and split not in query_split:
+            continue
+        
         img_dir = os.path.join(ogyei_root, split, 'images')
         lbl_dir = os.path.join(ogyei_root, split, 'labels')
         
@@ -38,7 +42,8 @@ def build_ogyei_df_strict_split(ogyei_root):
         
         for img_path in img_paths:
             img_name = os.path.basename(img_path)
-            txt_path = os.path.join(lbl_dir, os.path.splitext(img_name)[0] + '.txt')
+            name_stem = os.path.splitext(img_name)[0]
+            txt_path = os.path.join(lbl_dir, name_stem + '.txt')
             
             class_id = -1
             if os.path.exists(txt_path):
@@ -49,21 +54,46 @@ def build_ogyei_df_strict_split(ogyei_root):
             
             if class_id == -1:
                 continue 
-                
-            is_ref_val = 1 if split == 'valid' else 0
+
+            # ==========================================
+            # XỬ LÝ NHẬN DIỆN MẶT THUỐC (s / u)
+            # ==========================================
+            # Dùng Regex để tìm phần '_s_' hoặc '_u_' đứng trước các con số cuối cùng
+            match = re.search(r'_([su])_\d+$', name_stem, re.IGNORECASE)
+            if match:
+                side = match.group(1).lower()
+            else:
+                # Fallback dự phòng nếu tên file không đúng chuẩn
+                parts = name_stem.split('_')
+                side = parts[-2].lower() if len(parts) >= 2 and parts[-2].lower() in ['s', 'u'] else 'unknown'
+
+            # Todo: img_name has format {dulsevia_60_mg}_{s/u}_{034} => detect to get s or u to correct class_id and sub class
+            # Tạo sub_class_id duy nhất để phân biệt 2 mặt. 
+            # Giả sử class_id = 45. Mặt 's' sẽ là 450, mặt 'u' sẽ là 451
+            side_offset = 0 if side == 's' else (1 if side == 'u' else 2)
             
+            if both_size:
+                sub_class_id = class_id * 10 + side_offset
+            else:
+                sub_class_id = class_id
+        
+            is_ref_val = 1 if split == gallery_split else 0
             data.append({
                 'image_path': img_path,
+                'img_name': name_stem,
                 'txt_path': txt_path,
-                'label_idx': class_id,
+                'label_idx': class_id,           # ID gốc của loại thuốc (để biết chúng là cùng 1 viên)
+                'sub_label_idx': sub_class_id,   # ID duy nhất cho từng MẶT của viên thuốc
+                'side': side,                    # Lưu thêm ký tự s/u dạng text
                 'is_ref': is_ref_val,
-                'label_name': f"Class_{class_id}"
+                'label_name': f"Class_{class_id}" # Tên hiển thị (VD: Class_45_s)
             })
 
     df = pd.DataFrame(data)
     if len(df) > 0:
-        df['sub_label_idx'] = df['label_idx']
-        print(f"📦 Load OGYEIv2 (Strict) | Gallery (Valid): {len(df[df['is_ref']==1])} | Query (Test): {len(df[df['is_ref']==0])}")
+        # df['sub_label_idx'] = df['label_idx']
+        num_class = df['sub_label_idx'].nunique()
+        print(f"📦 Load OGYEIv2 (Strict) | num_class: {num_class} | Gallery (Valid): {len(df[df['is_ref']==1])} | Query (Test): {len(df[df['is_ref']==0])}")
     else:
         print("❌ Lỗi: DataFrame rỗng!")
     return df

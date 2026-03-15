@@ -177,7 +177,16 @@ def main():
     args = parser.parse_args()
 
     os.environ["PYTORCH_CUDA_ALLOC_CONF"] = "expandable_segments:True"
-    device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
+    # device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
+    if torch.cuda.is_available():
+        device = torch.device('cuda')
+        device_type = 'cuda'
+    elif torch.backends.mps.is_available(): # Dành cho MacBook chip M1/M2/M3
+        device = torch.device('mps')
+        device_type = 'mps'
+    else: # Dành cho MacBook chip Intel
+        device = torch.device('cpu')
+        device_type = 'cpu'
     
     df_all = load_epill_full_data()
     total_sub_classes = df_all['sub_label_idx'].nunique()
