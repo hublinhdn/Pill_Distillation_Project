@@ -75,11 +75,11 @@ Student KD (Ours)         |      95.61 % |   0.9707
 
 ## Run train_teacher_cv.py
 
-tmux new -s train_mpncov -d "bash -lc '
+tmux new -s train_phase2 -d "bash -lc '
 python pipelines/train_teacher_cv.py \
---backbone resnet101,convnext_base,convnext_large,resnet50,mobilenet_v3_large,resnet18,efficientnet_b0 \
+--backbone efficientnet_b0,resnet50,resnet101,convnext_base,convnext_large,resnet18,mobilenet_v3_large \
 --pooling gem \
-|& tee -a logs/train_mpncov_$(date +%F_%H%M%S).log
+|& tee -a logs/train_with_shape_aware_$(date +%F_%H%M%S).log
 '"
 
 

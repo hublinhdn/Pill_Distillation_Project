@@ -50,6 +50,7 @@ def train_one_fold(args, f_idx, num_classes, df_train, df_val, df_ref, device):
         accumulation_steps = 4
         lr_backbone, lr_head = 4e-5, 4e-4
 
+    img_size = 384 # hard size as limit of hardward
     print(f"⚙️ Config {args.backbone}: Size={img_size}x{img_size} | Batch={n_classes_batch*n_samples} | Accum={accumulation_steps}")
 
     resize_scale = int(img_size * 1.15) 
