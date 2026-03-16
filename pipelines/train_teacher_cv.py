@@ -22,6 +22,9 @@ from utils.data_utils import load_epill_full_data
 
 def train_one_fold(args, f_idx, num_classes, df_train, df_val, df_ref, device):
     L_SCE, L_CSCE, L_TRIPLET, L_CONTRASTIVE = 1.0, 0.2, 1.0, 1.0
+    USE_SHAPE_LOSS, L_SHAPE = False, 1.0 # Enable need more GPU cause 2 model embedding 
+    # debug
+    L_CONTRASTIVE = 0.0
     
     # ĐỘNG: QUẢN LÝ VRAM THEO BACKBONE
     if 'convnext_large' in args.backbone:
@@ -100,6 +103,9 @@ def train_one_fold(args, f_idx, num_classes, df_train, df_val, df_ref, device):
     criterion_contrastive = losses.ContrastiveLoss(pos_margin=0, neg_margin=1)
     miner = miners.TripletMarginMiner(margin=0.2, type_of_triplets="semihard")
 
+    # Use for shape
+    criterion_shape = nn.MSELoss()
+
     backbone_params = [p for n, p in model.named_parameters() if 'features' in n]
     head_params = [p for n, p in model.named_parameters() if 'features' not in n]
 
@@ -130,8 +136,6 @@ def train_one_fold(args, f_idx, num_classes, df_train, df_val, df_ref, device):
 
             with torch.amp.autocast('cuda'):
                 logits_sce, logits_csce, norm_embedding_rgb = model(imgs, labels=sub_labels)
-                _, _, norm_embedding_gray = model(imgs_gray, labels=sub_labels) # Chỉ lấy embedding của ảnh xám
-
                 loss_sce = criterion_sce(logits_sce, sub_labels)
                 loss_csce = criterion_sce(logits_csce, sub_labels)
                 hard_pairs = miner(norm_embedding_rgb, sub_labels)
@@ -142,11 +146,13 @@ def train_one_fold(args, f_idx, num_classes, df_train, df_val, df_ref, device):
                 # 4. THÊM SHAPE-CONSISTENCY LOSS (Ý TƯỞNG CỦA BẠN)
                 # ==================================================
                 # Ép vector ảnh màu phải giống hệt vector ảnh xám
-                criterion_shape = nn.MSELoss()
-                loss_shape = criterion_shape(norm_embedding_rgb, norm_embedding_gray)
-
+                if USE_SHAPE_LOSS:
+                    _, _, norm_embedding_gray = model(imgs_gray, labels=sub_labels) # Chỉ lấy embedding của ảnh xám
+                    loss_shape = criterion_shape(norm_embedding_rgb, norm_embedding_gray)
+                else:
+                    loss_shape = 0.0
+                
                 # 5. Tổng hợp Loss (Thêm hệ số L_SHAPE, ví dụ 1.0)
-                L_SHAPE = 1.0
                 loss = (L_SCE * loss_sce + L_CSCE * loss_csce + L_TRIPLET * loss_triplet + L_CONTRASTIVE * loss_contrastive + L_SHAPE * loss_shape) / accumulation_steps
             
             scaler.scale(loss).backward()
