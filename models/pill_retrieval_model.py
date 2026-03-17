@@ -19,11 +19,10 @@ class PillRetrievalModel(nn.Module):
         
 
         # ==========================================
-        # 🚀 SỬ DỤNG TIMM ĐỂ TẠO BACKBONE ĐỘNG
+        # 🚀 CƠ CHẾ KHỞI TẠO ĐỘNG (TIMM + TORCHVISION FALLBACK)
         # ==========================================
         try:
-            # Tạo model không có lớp phân loại (num_classes=0) 
-            # và không có Pooling mặc định (global_pool='') để giữ nguyên 4D Feature Map (B, C, H, W)
+            # ƯU TIÊN 1: Tìm trong thư viện timm (Dành cho các mạng hiện đại)
             self.features = timm.create_model(
                 backbone_type,
                 pretrained=True,
@@ -31,56 +30,42 @@ class PillRetrievalModel(nn.Module):
                 global_pool='' 
             )
             
-            # (Tùy chọn) Thử chỉnh Stride=16 cho họ ResNet/MobileNet để feature map to hơn giống code cũ của bạn
+            # (Tùy chọn) Chỉnh Stride=16 cho họ ResNet/MobileNet trong timm
             if 'resnet' in backbone_type or 'mobilenet' in backbone_type:
                 try:
                     self.features = timm.create_model(backbone_type, pretrained=True, num_classes=0, global_pool='', output_stride=16)
                 except:
-                    pass # Nếu mạng không hỗ trợ đổi stride thì bỏ qua, dùng bản gốc
+                    pass
                     
-        except Exception as e:
-            raise ValueError(f"❌ Không khởi tạo được '{backbone_type}'. Hãy đảm bảo tên này có trong thư viện timm. Lỗi: {e}")
+        except Exception as e_timm:
+            print(f"⚠️ timm không có '{backbone_type}', đang tự động chuyển hướng tìm trong torchvision...")
+            
+            # ƯU TIÊN 2: Fallback sang torchvision (Dành cho SqueezeNet, DenseNet...)
+            try:
+                # Gọi động hàm từ torchvision.models (ví dụ: models.squeezenet1_1)
+                base_model_func = getattr(models, backbone_type)
+                base = base_model_func(weights='DEFAULT')
+                
+                # Tách phần Features Extractors tùy theo cấu trúc của torchvision
+                if hasattr(base, 'features'):
+                    # Dành cho SqueezeNet, DenseNet, MobileNet, VGG...
+                    self.features = base.features
+                else:
+                    # Dành cho họ ResNet truyền thống
+                    self.features = nn.Sequential(*list(base.children())[:-2])
+                    
+            except AttributeError:
+                raise ValueError(f"❌ TÊN KHÔNG HỢP LỆ! Không tìm thấy '{backbone_type}' ở cả timm và torchvision.\nLỗi timm: {e_timm}")
+            except Exception as e_tv:
+                raise ValueError(f"❌ Khởi tạo thất bại từ torchvision. Lỗi: {e_tv}")
 
-        # Tự động trích xuất kênh bằng Dummy Tensor (Phần này bạn viết quá chuẩn, giữ nguyên!)
+        # Tự động trích xuất kênh bằng Dummy Tensor
         with torch.no_grad():
             dummy_input = torch.zeros(1, 3, 224, 224)
             dummy_feat = self.features(dummy_input)
             in_channels = dummy_feat.shape[1] 
             
-        print(f"✅ Khởi tạo [{backbone_type}] - Channels: {in_channels} - Pooling: {self.pooling_type.upper()}")
-
-
-
-
-
-        # # --- BACKBONE SELECTION ---
-        # if backbone_type == 'convnext_large':
-        #     base = models.convnext_large(weights='DEFAULT')
-        #     self.features = base.features
-        # elif backbone_type == 'convnext_base':
-        #     base = models.convnext_base(weights='DEFAULT')
-        #     self.features = base.features
-        # elif backbone_type == 'resnet101':
-        #     base = models.resnet101(weights='DEFAULT')
-        #     base.layer4[0].conv2.stride = (1, 1)
-        #     base.layer4[0].downsample[0].stride = (1, 1)
-        #     self.features = nn.Sequential(*list(base.children())[:-2])
-        # elif backbone_type == 'mobilenet_v3_large':
-        #     base = models.mobilenet_v3_large(weights='DEFAULT')
-        #     self.features = base.features
-        # elif backbone_type == 'efficientnet_b0':
-        #     base = models.efficientnet_b0(weights='DEFAULT')
-        #     self.features = base.features
-        # elif backbone_type == 'resnet18':
-        #     base = models.resnet18(weights='DEFAULT')
-        #     base.layer4[0].conv1.stride = (1, 1) 
-        #     base.layer4[0].downsample[0].stride = (1, 1)
-        #     self.features = nn.Sequential(*list(base.children())[:-2])
-        # else: 
-        #     base = models.resnet50(weights='DEFAULT')
-        #     base.layer4[0].conv2.stride = (1, 1)
-        #     base.layer4[0].downsample[0].stride = (1, 1)
-        #     self.features = nn.Sequential(*list(base.children())[:-2])
+        print(f"✅ Khởi tạo [{backbone_type}] thành công! - Channels: {in_channels} - Pooling: {self.pooling_type.upper()}")
 
         # --- POOLING & PROJECTION HEAD ---
         if self.pooling_type == 'mpncov':

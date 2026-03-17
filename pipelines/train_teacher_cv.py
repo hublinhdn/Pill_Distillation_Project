@@ -101,7 +101,8 @@ def train_one_fold(args, f_idx, num_classes, df_train, df_val, df_ref, device):
         transforms.Resize((resize_scale, resize_scale)),
         transforms.RandomResizedCrop(img_size, scale=(0.8, 1.0)),
         transforms.RandomHorizontalFlip(),
-        transforms.RandomRotation(15),
+        transforms.RandomVerticalFlip(),
+        transforms.RandomRotation(180),
         transforms.ColorJitter(0.2, 0.1),
         transforms.ToTensor(),
         transforms.Normalize(mean=[0.485, 0.456, 0.406], std=[0.229, 0.224, 0.225]),
@@ -153,10 +154,27 @@ def train_one_fold(args, f_idx, num_classes, df_train, df_val, df_ref, device):
     ], weight_decay=5e-2)
     
     TOTAL_EPOCHS = 60 
-    scheduler = torch.optim.lr_scheduler.CosineAnnealingLR(optimizer, T_max=TOTAL_EPOCHS, eta_min=1e-6)
+    WARMUP_EPOCHS = 5
+    # 1. Warm-up từ từ trong 5 Epoch đầu
+    warmup_scheduler = torch.optim.lr_scheduler.LinearLR(
+        optimizer, start_factor=0.01, total_iters=WARMUP_EPOCHS
+    )
+    
+    # 2. Cosine Annealing cho 55 Epoch còn lại
+    cosine_scheduler = torch.optim.lr_scheduler.CosineAnnealingLR(
+        optimizer, T_max=(TOTAL_EPOCHS - WARMUP_EPOCHS), eta_min=1e-6
+    )
+    
+    # 3. Nối 2 cái lại với nhau
+    scheduler = torch.optim.lr_scheduler.SequentialLR(
+        optimizer, 
+        schedulers=[warmup_scheduler, cosine_scheduler], 
+        milestones=[WARMUP_EPOCHS]
+    )
+
     scaler = torch.amp.GradScaler('cuda')
 
-    best_val_map = 0.0
+    best_val_map,r1 = 0.0, 0.0
 
     for epoch in range(1, TOTAL_EPOCHS + 1):
         model.train()
@@ -211,15 +229,17 @@ def train_one_fold(args, f_idx, num_classes, df_train, df_val, df_ref, device):
             # Mặc định sử dụng Both Sides để lưu Model tốt nhất
             val_metrics = evaluate_retrieval(model, val_loader, device, flag_both_side=True)
             val_map = val_metrics['mAP']
-            print(f"📊 Epoch {epoch} mAP: {val_map:.4f} (Rank-1: {val_metrics['Rank-1']:.4f})")
+            val_r1 = val_metrics['Rank-1']
+            print(f"📊 Epoch {epoch} mAP: {val_map:.4f} (Rank-1: {val_r1:.4f})")
             
             if val_map > best_val_map:
                 best_val_map = val_map
+                r1 = val_r1
                 folder_weight = 'weights/phase2'
                 os.makedirs(folder_weight, exist_ok=True)
                 torch.save(model.state_dict(), f"{folder_weight}/best_{args.backbone}_{args.pooling}_fold{f_idx}.pth")
                 
-    return best_val_map
+    return best_val_map, r1
 
 def main():
     parser = argparse.ArgumentParser()
@@ -265,8 +285,11 @@ def main():
         print(f"{'='*60}")
         
         args.backbone = current_backbone
-        best_map = train_one_fold(args, fold, total_sub_classes, df_train, df_val, df_ref_gallery, device)
-        results_summary[current_backbone] = best_map
+        try:
+            best_map, r1 = train_one_fold(args, fold, total_sub_classes, df_train, df_val, df_ref_gallery, device)
+            results_summary[current_backbone] = (best_map, r1)
+        except:
+            results_summary[current_backbone] = (0.0, 0.0)
         
         gc.collect()
         torch.cuda.empty_cache()
@@ -274,8 +297,8 @@ def main():
     print("\n" + "="*50)
     print("🏆 BÁO CÁO TỔNG KẾT (FOLD 0)")
     print("="*50)
-    for bb, mAP in results_summary.items():
-        print(f" - {bb.ljust(20)}: Best mAP = {mAP:.4f}")
+    for bb, (mAP, r1) in results_summary.items():
+        print(f" - {bb.ljust(20)}: Best mAP = {mAP:.4f} Rank-1 = {r1:.4f}")
     print("="*50)
 
     
@@ -283,8 +306,8 @@ def main():
     os.makedirs("reports", exist_ok=True)
     with open(f"reports/{pipeline_name}_batch_experiment_{pooling}_summary.txt", "w") as f:
         f.write(f"Batch Experiment {pipeline_name} Results for pooling: {pooling}\n")
-        for bb, mAP in results_summary.items():
-            f.write(f"{bb}: {mAP:.4f}\n")
+        for bb, (mAP, r1) in results_summary.items():
+            f.write(f"{bb}: {mAP:.4f} - {r1:.4f}\n")
 
 if __name__ == '__main__':
     main()
