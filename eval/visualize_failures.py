@@ -9,7 +9,7 @@ import matplotlib.pyplot as plt
 from tqdm import tqdm
 
 sys.path.append(os.path.abspath(os.path.join(os.path.dirname(__file__), '..')))
-from models.teacher_model import PillRetrievalModel
+from models.pill_retrieval_model import PillRetrievalModel
 from utils.dataset_ogyei import build_ogyei_df_strict_split, OGYEICropDataset, LetterboxResize
 
 USE_TRAIN_AS_GALLERY = True # use valid (6) or train(28) as gallery for query

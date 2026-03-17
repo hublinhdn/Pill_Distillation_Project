@@ -15,7 +15,7 @@ import torchvision.transforms.functional as TF
 
 # Import local modules
 sys.path.append(os.path.abspath(os.path.join(os.path.dirname(__file__), '..')))
-from models.teacher_model import PillRetrievalModel
+from models.pill_retrieval_model import PillRetrievalModel
 from utils.dataset_loader import PillDataset, BalancedBatchSampler
 from utils.evaluator import evaluate_retrieval
 from utils.data_utils import load_epill_full_data
@@ -25,36 +25,74 @@ def train_one_fold(args, f_idx, num_classes, df_train, df_val, df_ref, device):
     USE_SHAPE_LOSS, L_SHAPE = False, 1.0 # Enable need more GPU cause 2 model embedding 
     # debug
     L_CONTRASTIVE = 0.0
-    
-    # ĐỘNG: QUẢN LÝ VRAM THEO BACKBONE
-    if 'convnext_large' in args.backbone:
-        img_size = 384
-        n_classes_batch, n_samples = 4, 2  
-        accumulation_steps = 16            
-        lr_backbone, lr_head = 2e-5, 2e-4
-    elif 'convnext_base' in args.backbone:
-        img_size = 384
-        n_classes_batch, n_samples = 8, 2  
-        accumulation_steps = 8             
-        lr_backbone, lr_head = 3e-5, 3e-4
-    elif 'resnet101' in args.backbone:
-        img_size = 448
-        n_classes_batch, n_samples = 8, 2  
-        accumulation_steps = 8
-        lr_backbone, lr_head = 3e-5, 3e-4
-    elif 'resnet18' in args.backbone:
-        img_size = 384
-        n_classes_batch, n_samples = 16, 2 
-        accumulation_steps = 4
-        lr_backbone, lr_head = 4e-5, 4e-4
-    else: 
-        img_size = 448
-        n_classes_batch, n_samples = 16, 2 
-        accumulation_steps = 4
-        lr_backbone, lr_head = 4e-5, 4e-4
 
-    img_size = 384 # hard size as limit of hardward
-    print(f"⚙️ Config {args.backbone}: Size={img_size}x{img_size} | Batch={n_classes_batch*n_samples} | Accum={accumulation_steps}")
+    # XÓA ĐOẠN IF/ELIF CŨ VÀ DÒNG img_size = 384 GHI ĐÈ ĐI, THAY BẰNG ĐOẠN NÀY:
+    
+    backbone_name = args.backbone.lower()
+    
+    # 1. NHÓM SIÊU NẶNG (XLARGE): > 100 Triệu Tham số (OOM Risk: High)
+    if any(x in backbone_name for x in ['xlarge', 'large', 'b6', 'b7', 'v2_l']):
+        img_size = 384
+        n_classes_batch, n_samples = 2, 2  # Physical Batch = 4 ảnh
+        accumulation_steps = 32            # Effective Batch = 4 * 32 = 128
+        lr_backbone, lr_head = 1e-5, 1e-4  # Mạng to cần LR nhỏ để tránh sốc Gradient
+
+    # 2. NHÓM NẶNG (LARGE/BASE): 40M - 100M Tham số
+    elif any(x in backbone_name for x in ['base', 'b5', 'resnet101', 'resnet152', 'resnext101']):
+        img_size = 384
+        n_classes_batch, n_samples = 4, 2  # Physical Batch = 8 ảnh
+        accumulation_steps = 16            # Effective Batch = 8 * 16 = 128
+        lr_backbone, lr_head = 2e-5, 2e-4
+
+    # 3. NHÓM TRUNG BÌNH (MEDIUM): 15M - 40M Tham số
+    elif any(x in backbone_name for x in ['resnet50', 'b3', 'b4', 'nfnet']):
+        img_size = 384
+        n_classes_batch, n_samples = 8, 2  # Physical Batch = 16 ảnh
+        accumulation_steps = 8             # Effective Batch = 16 * 8 = 128
+        lr_backbone, lr_head = 3e-5, 3e-4
+
+    # 4. NHÓM SIÊU NHẸ (LIGHTWEIGHT/TINY): < 15M Tham số (Student Models)
+    else: # Bao gồm: resnet18, mobilenet, shufflenet, ghostnet, b0, b1, atto, femto, pico...
+        img_size = 384
+        # Mạng nhỏ VRAM dư dả, ta nhồi Batch to vào để train cực nhanh
+        n_classes_batch, n_samples = 16, 2 # Physical Batch = 32 ảnh
+        accumulation_steps = 4             # Effective Batch = 32 * 4 = 128
+        lr_backbone, lr_head = 5e-5, 5e-4  # Mạng nhỏ cần LR to hơn một chút để học nhanh
+
+    print(f"⚙️ Config {args.backbone}: Size={img_size}x{img_size} | Physical Batch={n_classes_batch*n_samples} | Accum={accumulation_steps} | Eff Batch={n_classes_batch*n_samples*accumulation_steps}")
+
+
+
+    
+    # # ĐỘNG: QUẢN LÝ VRAM THEO BACKBONE
+    # if 'convnext_large' in args.backbone:
+    #     img_size = 384
+    #     n_classes_batch, n_samples = 4, 2  
+    #     accumulation_steps = 16            
+    #     lr_backbone, lr_head = 2e-5, 2e-4
+    # elif 'convnext_base' in args.backbone:
+    #     img_size = 384
+    #     n_classes_batch, n_samples = 8, 2  
+    #     accumulation_steps = 8             
+    #     lr_backbone, lr_head = 3e-5, 3e-4
+    # elif 'resnet101' in args.backbone:
+    #     img_size = 448
+    #     n_classes_batch, n_samples = 8, 2  
+    #     accumulation_steps = 8
+    #     lr_backbone, lr_head = 3e-5, 3e-4
+    # elif 'resnet18' in args.backbone:
+    #     img_size = 384
+    #     n_classes_batch, n_samples = 16, 2 
+    #     accumulation_steps = 4
+    #     lr_backbone, lr_head = 4e-5, 4e-4
+    # else: 
+    #     img_size = 448
+    #     n_classes_batch, n_samples = 16, 2 
+    #     accumulation_steps = 4
+    #     lr_backbone, lr_head = 4e-5, 4e-4
+
+    # img_size = 384 # hard size as limit of hardward
+    # print(f"⚙️ Config {args.backbone}: Size={img_size}x{img_size} | Batch={n_classes_batch*n_samples} | Accum={accumulation_steps}")
 
     resize_scale = int(img_size * 1.15) 
 
@@ -186,7 +224,8 @@ def train_one_fold(args, f_idx, num_classes, df_train, df_val, df_ref, device):
 def main():
     parser = argparse.ArgumentParser()
     parser.add_argument('--backbone', type=str, default='convnext_base,resnet50,mobilenet_v3_large')
-    parser.add_argument('--pooling', type=str, default='gem', choices=['gem', 'mpncov']) # <-- Thêm dòng này
+    parser.add_argument('--pooling', type=str, default='gem', choices=['gem', 'mpncov'])
+    parser.add_argument('--pipeline_name', type=str, default='baseline')
     args = parser.parse_args()
 
     os.environ["PYTORCH_CUDA_ALLOC_CONF"] = "expandable_segments:True"
@@ -218,6 +257,7 @@ def main():
     
     results_summary = {}
     pooling = args.pooling
+    pipeline_name = args.pipeline_name
 
     for current_backbone in backbone_list:
         print(f"\n{'='*60}")
@@ -241,8 +281,8 @@ def main():
     
     
     os.makedirs("reports", exist_ok=True)
-    with open(f"reports/batch_experiment_{pooling}_summary.txt", "w") as f:
-        f.write(f"Batch Experiment Results for pooling: {pooling}\n")
+    with open(f"reports/{pipeline_name}_batch_experiment_{pooling}_summary.txt", "w") as f:
+        f.write(f"Batch Experiment {pipeline_name} Results for pooling: {pooling}\n")
         for bb, mAP in results_summary.items():
             f.write(f"{bb}: {mAP:.4f}\n")
 

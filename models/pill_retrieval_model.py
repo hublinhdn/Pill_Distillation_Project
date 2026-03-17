@@ -3,38 +3,12 @@ import torch.nn as nn
 import torch.nn.functional as F
 import math
 from torchvision import models
+import timm
+import os, sys
+# Import local modules
+sys.path.append(os.path.abspath(os.path.join(os.path.dirname(__file__), '..')))
+from middle.pooling import GeMPooling, MPNCOV
 
-class GeMPooling(nn.Module):
-    def __init__(self, p=3.0, eps=1e-6):
-        super(GeMPooling, self).__init__()
-        self.p = nn.Parameter(torch.ones(1) * p)
-        self.eps = eps
-
-    def forward(self, x):
-        x = x.clamp(min=self.eps).pow(self.p)
-        return F.avg_pool2d(x, (x.size(-2), x.size(-1))).pow(1./self.p)
-
-class MPNCOV(nn.Module):
-    def __init__(self, iterNum=3):
-        super(MPNCOV, self).__init__()
-        self.iterNum = iterNum
-
-    def forward(self, x):
-        batchSize, channels, h, w = x.data.shape
-        M = h * w
-        x = x.view(batchSize, channels, M)
-        I_hat = (-1.0/M) * torch.ones(M, M, device=x.device) + torch.eye(M, M, device=x.device)
-        I_hat = I_hat.view(1, M, M).repeat(batchSize, 1, 1)
-        y = x.bmm(I_hat).bmm(x.transpose(1, 2)) / M
-        trY = y.diagonal(dim1=-2, dim2=-1).sum(1)
-        y = y / trY.view(batchSize, 1, 1)
-        I = torch.eye(channels, channels, device=x.device).view(1, channels, channels).repeat(batchSize, 1, 1)
-        Y, Z = y, I
-        for i in range(self.iterNum):
-            ZY = Z.bmm(Y)
-            Y = 0.5 * Y.bmm(3.0 * I - ZY)
-            Z = 0.5 * (3.0 * I - ZY).bmm(Z)
-        return Y * torch.sqrt(trY).view(batchSize, 1, 1)
 
 class PillRetrievalModel(nn.Module):
     def __init__(self, num_classes, backbone_type='resnet50', pooling_type='gem', embedding_size=512, s=64.0, m=0.35):
@@ -43,42 +17,70 @@ class PillRetrievalModel(nn.Module):
         self.m = m 
         self.pooling_type = pooling_type.lower()
         
-        # --- BACKBONE SELECTION ---
-        if backbone_type == 'convnext_large':
-            base = models.convnext_large(weights='DEFAULT')
-            self.features = base.features
-        elif backbone_type == 'convnext_base':
-            base = models.convnext_base(weights='DEFAULT')
-            self.features = base.features
-        elif backbone_type == 'resnet101':
-            base = models.resnet101(weights='DEFAULT')
-            base.layer4[0].conv2.stride = (1, 1)
-            base.layer4[0].downsample[0].stride = (1, 1)
-            self.features = nn.Sequential(*list(base.children())[:-2])
-        elif backbone_type == 'mobilenet_v3_large':
-            base = models.mobilenet_v3_large(weights='DEFAULT')
-            self.features = base.features
-        elif backbone_type == 'efficientnet_b0':
-            base = models.efficientnet_b0(weights='DEFAULT')
-            self.features = base.features
-        elif backbone_type == 'resnet18':
-            base = models.resnet18(weights='DEFAULT')
-            base.layer4[0].conv1.stride = (1, 1) 
-            base.layer4[0].downsample[0].stride = (1, 1)
-            self.features = nn.Sequential(*list(base.children())[:-2])
-        else: 
-            base = models.resnet50(weights='DEFAULT')
-            base.layer4[0].conv2.stride = (1, 1)
-            base.layer4[0].downsample[0].stride = (1, 1)
-            self.features = nn.Sequential(*list(base.children())[:-2])
-        
-        # Tự động trích xuất kênh bằng Dummy Tensor
+
+        # ==========================================
+        # 🚀 SỬ DỤNG TIMM ĐỂ TẠO BACKBONE ĐỘNG
+        # ==========================================
+        try:
+            # Tạo model không có lớp phân loại (num_classes=0) 
+            # và không có Pooling mặc định (global_pool='') để giữ nguyên 4D Feature Map (B, C, H, W)
+            self.features = timm.create_model(
+                backbone_type,
+                pretrained=True,
+                num_classes=0,
+                global_pool='' 
+            )
+            
+            # (Tùy chọn) Thử chỉnh Stride=16 cho họ ResNet/MobileNet để feature map to hơn giống code cũ của bạn
+            if 'resnet' in backbone_type or 'mobilenet' in backbone_type:
+                try:
+                    self.features = timm.create_model(backbone_type, pretrained=True, num_classes=0, global_pool='', output_stride=16)
+                except:
+                    pass # Nếu mạng không hỗ trợ đổi stride thì bỏ qua, dùng bản gốc
+                    
+        except Exception as e:
+            raise ValueError(f"❌ Không khởi tạo được '{backbone_type}'. Hãy đảm bảo tên này có trong thư viện timm. Lỗi: {e}")
+
+        # Tự động trích xuất kênh bằng Dummy Tensor (Phần này bạn viết quá chuẩn, giữ nguyên!)
         with torch.no_grad():
             dummy_input = torch.zeros(1, 3, 224, 224)
             dummy_feat = self.features(dummy_input)
             in_channels = dummy_feat.shape[1] 
             
         print(f"✅ Khởi tạo [{backbone_type}] - Channels: {in_channels} - Pooling: {self.pooling_type.upper()}")
+
+
+
+
+
+        # # --- BACKBONE SELECTION ---
+        # if backbone_type == 'convnext_large':
+        #     base = models.convnext_large(weights='DEFAULT')
+        #     self.features = base.features
+        # elif backbone_type == 'convnext_base':
+        #     base = models.convnext_base(weights='DEFAULT')
+        #     self.features = base.features
+        # elif backbone_type == 'resnet101':
+        #     base = models.resnet101(weights='DEFAULT')
+        #     base.layer4[0].conv2.stride = (1, 1)
+        #     base.layer4[0].downsample[0].stride = (1, 1)
+        #     self.features = nn.Sequential(*list(base.children())[:-2])
+        # elif backbone_type == 'mobilenet_v3_large':
+        #     base = models.mobilenet_v3_large(weights='DEFAULT')
+        #     self.features = base.features
+        # elif backbone_type == 'efficientnet_b0':
+        #     base = models.efficientnet_b0(weights='DEFAULT')
+        #     self.features = base.features
+        # elif backbone_type == 'resnet18':
+        #     base = models.resnet18(weights='DEFAULT')
+        #     base.layer4[0].conv1.stride = (1, 1) 
+        #     base.layer4[0].downsample[0].stride = (1, 1)
+        #     self.features = nn.Sequential(*list(base.children())[:-2])
+        # else: 
+        #     base = models.resnet50(weights='DEFAULT')
+        #     base.layer4[0].conv2.stride = (1, 1)
+        #     base.layer4[0].downsample[0].stride = (1, 1)
+        #     self.features = nn.Sequential(*list(base.children())[:-2])
 
         # --- POOLING & PROJECTION HEAD ---
         if self.pooling_type == 'mpncov':

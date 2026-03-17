@@ -11,7 +11,7 @@ from tqdm import tqdm
 from pytorch_metric_learning import losses, miners
 
 sys.path.append(os.path.abspath(os.path.join(os.path.dirname(__file__), '..')))
-from models.teacher_model import PillRetrievalModel
+from models.pill_retrieval_model import PillRetrievalModel
 from utils.dataset_loader import PillDataset, BalancedBatchSampler
 from utils.evaluator import evaluate_retrieval
 from utils.data_utils import load_epill_full_data
