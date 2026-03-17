@@ -21,9 +21,13 @@ GemPooling: Single Eval (1,1, 0.2, 1)
  - convnext_base       : Best mAP = 0.8223
  - convnext_large      : Best mAP = 0.8201
  - resnet50            : Best mAP = 0.8017
+
  - mobilenet_v3_large  : Best mAP = 0.7106
  - resnet18            : Best mAP = 0.7512
  - efficientnet_b0     : Best mAP = 0.7249
+
+==> Thử thêm: mô hình lớn (15 cái khác họ)
+==> Thử thêm: 15 cái nhỏ: mobilenet, dennet, squeezeNet,efficientnet, channel, CBAM 
 
  MPN COV: 2 side Eval (1,1, 0.2, 1)
  - resnet101           : Best mAP = 0.7966
@@ -38,6 +42,9 @@ convnext_base, convnext_large: Khong load nổi với size 448x448
 ==> teacher - student: convnext_base - resnet18
 
 ## NEXT: teacher - student: convnext_base - resnet18
+Total Loss = Loss_Student + alpha * MSE(Emb_Student, Emb_Teacher)
+==> 5 teacher KD to 5 student (5x5)
+
 1. train again student baseline with size 384
  - resnet18(1,1, 0.2, 1) + gem + 384           : Best mAP = 0.7583
 
@@ -48,26 +55,34 @@ Thứ tự	Loại hình huấn luyện	Cấu hình chi tiết	            Best m
 3	      Phase 1 - KL Div	    Alpha 1.0	                      0.81	      Tốt
 4	      Phase 2 - Cosine	    Alpha 100.0	                    0.8339	    Rất tốt
 5	      Phase 3 - Hybrid	    Cosine (Alpha 30) + KL	        0.8249	    Không hiệu quả bằng
-6	      Phase 2 - Cosine	    Alpha 10.0	                    0.8409	    🏆 QUÁN QUÂN
+6	      Phase 2 - Cosine	    Alpha 10.0	                    0.8409	    QUÁN QUÂN
 
 ## Cross dataset domain: check on OGYEIv2 ( use validation as gallery, test as query) as unseen dataset
 - dataset of OGYEIv2 is 28/6/6 as train/test/valid
 - Eval cross dataset (eval/evalue_cross_dataset.py)
 
-### 1.OGYEI valid => gallery, test => query, ignore train
+### 1.OGYEI valid(6) => gallery, test => query, ignore train
 
 Baseline                  |      Map     |   R1
 Student Baseline          |      78.57 % |   0.8481
 Teacher Model             |      87.65 % |   0.9116
 Student KD (Ours)         |      83.63 % |   0.8823
 
-### 2.OGYEI train => gallery, (test, valid) => query
+### 2.OGYEI train(28) => gallery, (test, valid) => query
 Student Baseline          |      93.75 % |   0.9613
 Teacher Model             |      95.83 % |   0.9744
 Student KD (Ours)         |      95.61 % |   0.9707
 
 ### 3. Eval
 - Eval cross dataset (eval/evalue_cross_dataset.py)
+============================================================
+BÁO CÁO LỖI OGYEIv2 
+============================================================
+Tên                       | Mô hình                   | Số lỗi    
+------------------------------------------------------------
+student_kd_resnet18       | resnet18                  | 27
+student_baseline_resnet18 | resnet18                  | 39
+teacher_convnext_base     | convnext_base             | 30
 
 
 
@@ -84,7 +99,7 @@ python pipelines/train_teacher_cv.py \
 
 
 ## Run train KD
-$\text{Total Loss} = \text{Loss}_{Student} + \alpha \times \text{MSE}(Emb_{Student}, Emb_{Teacher})$
+Total Loss = Loss_Student + alpha * MSE(Emb_Student, Emb_Teacher)
 
 ### 🧪 Giai đoạn 1: Tìm ra Tâm Pháp Tốt Nhất (So sánh các trường phái KD)
 Chạy 3 lệnh sau (sử dụng alpha tiêu chuẩn cho từng loại) để xem ResNet18 "hấp thụ" cách dạy nào tốt nhất.
