@@ -9,7 +9,6 @@ import os, sys
 sys.path.append(os.path.abspath(os.path.join(os.path.dirname(__file__), '..')))
 from middle.pooling import GeMPooling, MPNCOV
 
-
 class PillRetrievalModel(nn.Module):
     def __init__(self, num_classes, backbone_type='resnet50', pooling_type='gem', embedding_size=512, s=64.0, m=0.35):
         super(PillRetrievalModel, self).__init__()
@@ -17,62 +16,79 @@ class PillRetrievalModel(nn.Module):
         self.m = m 
         self.pooling_type = pooling_type.lower()
         
+        # ==========================================
+        # 🚀 CƠ CHẾ KHỞI TẠO ĐỘNG (BẢN CHỐT THỰC NGHIỆM)
+        # ==========================================
+        backbone_lower = backbone_type.lower()
+        
+        # ---------------------------------------------------------
+        # 👑 ĐƯỜNG ƯU TIÊN 1: TRẢ LẠI BẢN HACK CỦA BẠN CHO RESNET
+        # (Không dùng Dilation để tránh lọt khe mất chữ dập)
+        # ---------------------------------------------------------
+        if backbone_lower in ['resnet18', 'resnet34', 'resnet50', 'resnet101']:
+            print(f"🌟 SỬ DỤNG TORCHVISION: Đang load {backbone_type} với Stride=1 thủ công (Dense Sampling)")
+            base_model_func = getattr(models, backbone_lower)
+            base = base_model_func(weights='DEFAULT')
+            
+            if backbone_lower in ['resnet18', 'resnet34']:
+                base.layer4[0].conv1.stride = (1, 1)
+            else:
+                base.layer4[0].conv2.stride = (1, 1)
+            base.layer4[0].downsample[0].stride = (1, 1)
+            
+            self.features = nn.Sequential(*list(base.children())[:-2])
 
-        # ==========================================
-        # 🚀 CƠ CHẾ KHỞI TẠO ĐỘNG (TIMM + TORCHVISION FALLBACK)
-        # ==========================================
-        try:
-            # ƯU TIÊN 1: Tìm trong thư viện timm (Dành cho các mạng hiện đại)
-            self.features = timm.create_model(
-                backbone_type,
-                pretrained=True,
-                num_classes=0,
-                global_pool='' 
-            )
-            
-            # (Tùy chọn) Chỉnh Stride=16 cho họ ResNet/MobileNet trong timm
-            if 'resnet' in backbone_type or 'mobilenet' in backbone_type:
-                try:
-                    self.features = timm.create_model(backbone_type, pretrained=True, num_classes=0, global_pool='', output_stride=16)
-                except:
-                    pass
-                    
-        except Exception as e_timm:
-            print(f"⚠️ timm không có '{backbone_type}', đang tự động chuyển hướng tìm trong torchvision...")
-            
-            # ƯU TIÊN 2: Fallback sang torchvision (Dành cho SqueezeNet, DenseNet...)
+        # ---------------------------------------------------------
+        # 👑 ĐƯỜNG ƯU TIÊN 2: BẢO TOÀN LỚP FEATURES CHO MOBILENET
+        # ---------------------------------------------------------
+        elif backbone_lower in ['mobilenet_v3_large', 'mobilenetv3_large_100', 'mobilenet_v2', 'mobilenetv2_100']:
+            # Xử lý đồng nhất tên gọi cho torchvision
+            tv_name = 'mobilenet_v3_large' if 'v3' in backbone_lower else 'mobilenet_v2'
+            print(f"🌟 SỬ DỤNG TORCHVISION: Đang load {tv_name} để giữ nguyên khối đặc trưng")
+            base_model_func = getattr(models, tv_name)
+            base = base_model_func(weights='DEFAULT')
+            self.features = base.features
+
+        # ---------------------------------------------------------
+        # ⚡ ĐƯỜNG CHUNG CHO TIMM (CÁC MẠNG HIỆN ĐẠI/TRANSFORMER)
+        # ---------------------------------------------------------
+        else:
             try:
-                # Gọi động hàm từ torchvision.models (ví dụ: models.squeezenet1_1)
-                base_model_func = getattr(models, backbone_type)
-                base = base_model_func(weights='DEFAULT')
-                
-                # Tách phần Features Extractors tùy theo cấu trúc của torchvision
-                if hasattr(base, 'features'):
-                    # Dành cho SqueezeNet, DenseNet, MobileNet, VGG...
-                    self.features = base.features
+                # Họ ResNeSt, SEResNet vẫn có thể thử Dilation xem sao (nếu rớt mAP, ta sẽ đưa lên nhóm trên sau)
+                if any(x in backbone_lower for x in ['resnest', 'seresnet', 'tresnet']):
+                    print(f"⚡ DÙNG TIMM: Load {backbone_type} với output_stride=16")
+                    self.features = timm.create_model(backbone_lower, pretrained=True, num_classes=0, global_pool='', output_stride=16)
                 else:
-                    # Dành cho họ ResNet truyền thống
-                    self.features = nn.Sequential(*list(base.children())[:-2])
+                    print(f"⚡ DÙNG TIMM: Load {backbone_type} với cấu trúc mặc định")
+                    self.features = timm.create_model(backbone_lower, pretrained=True, num_classes=0, global_pool='')
                     
-            except AttributeError:
-                raise ValueError(f"❌ TÊN KHÔNG HỢP LỆ! Không tìm thấy '{backbone_type}' ở cả timm và torchvision.\nLỗi timm: {e_timm}")
-            except Exception as e_tv:
-                raise ValueError(f"❌ Khởi tạo thất bại từ torchvision. Lỗi: {e_tv}")
+            except Exception as e_timm:
+                print(f"⚠️ TIMM không chứa '{backbone_type}'. Tìm kiếm dự phòng trong Torchvision...")
+                try:
+                    # Dự phòng cho DenseNet, SqueezeNet...
+                    base_model_func = getattr(models, backbone_lower)
+                    base = base_model_func(weights='DEFAULT')
+                    if hasattr(base, 'features'):
+                        self.features = base.features
+                    else:
+                        self.features = nn.Sequential(*list(base.children())[:-2])
+                except Exception as e_tv:
+                    raise ValueError(f"❌ KHÔNG TÌM THẤY '{backbone_type}'. Lỗi chi tiết: {e_tv}")
 
-        # Tự động trích xuất kênh bằng Dummy Tensor
+        # Tự động trích xuất số lượng kênh bằng Dummy Tensor (Size 384x384 để an toàn cho Swin/MaxViT)
         with torch.no_grad():
-            dummy_input = torch.zeros(1, 3, 224, 224)
+            dummy_input = torch.zeros(1, 3, 384, 384)
             dummy_feat = self.features(dummy_input)
             in_channels = dummy_feat.shape[1] 
             
-        print(f"✅ Khởi tạo [{backbone_type}] thành công! - Channels: {in_channels} - Pooling: {self.pooling_type.upper()}")
+        print(f"✅ HOÀN TẤT KHỞI TẠO! Channels: {in_channels} | Pooling: {self.pooling_type.upper()}")
 
-        # --- POOLING & PROJECTION HEAD ---
+        # ==========================================
+        # 🧠 POOLING & PROJECTION HEAD
+        # ==========================================
         if self.pooling_type == 'mpncov':
-            # Ép kênh xuống 256 trước khi tính ma trận Hiệp phương sai
             self.mpncov_bottleneck = nn.Conv2d(in_channels, 256, kernel_size=1, bias=False)
             self.pool = MPNCOV(iterNum=3)
-            # Ma trận Covariance sẽ có kích thước 256x256 = 65,536 chiều
             self.fc_projection = nn.Linear(256 * 256, embedding_size, bias=False)
         else:
             self.pool = GeMPooling(p=3.0)
@@ -91,9 +107,8 @@ class PillRetrievalModel(nn.Module):
     def forward(self, x, labels=None):
         feat = self.features(x)
         
-        # Xử lý rẽ nhánh Pooling
         if self.pooling_type == 'mpncov':
-            feat = self.mpncov_bottleneck(feat) # Nén xuống 256 channels
+            feat = self.mpncov_bottleneck(feat) 
             pooled_feat = self.pool(feat).view(feat.size(0), -1) 
         else:
             pooled_feat = self.pool(feat).view(feat.size(0), -1) 

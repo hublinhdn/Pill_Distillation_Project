@@ -12,6 +12,7 @@ from torchvision import transforms
 from tqdm import tqdm
 from pytorch_metric_learning import losses, miners
 import torchvision.transforms.functional as TF
+import traceback
 
 # Import local modules
 sys.path.append(os.path.abspath(os.path.join(os.path.dirname(__file__), '..')))
@@ -179,7 +180,7 @@ def train_one_fold(args, f_idx, num_classes, df_train, df_val, df_ref, device):
     for epoch in range(1, TOTAL_EPOCHS + 1):
         model.train()
         total_loss = 0
-        pbar = tqdm(train_loader, desc=f"Fold {f_idx} | Ep {epoch}")
+        pbar = tqdm(train_loader, desc=f"{args.backbone} | Fold {f_idx} | Ep {epoch}")
         
         optimizer.zero_grad()
         
@@ -221,7 +222,7 @@ def train_one_fold(args, f_idx, num_classes, df_train, df_val, df_ref, device):
                 optimizer.zero_grad()
 
             total_loss += loss.item() * accumulation_steps
-            pbar.set_postfix({'L': f"{loss.item()*accumulation_steps:.3f}", 'Best': f"{best_val_map:.3f}"})
+            pbar.set_postfix({'L': f"{loss.item()*accumulation_steps:.4f}", 'mAp': f"{best_val_map:.4f}", 'R1':f"{r1:.4f}"})
 
         scheduler.step()
 
@@ -249,14 +250,14 @@ def main():
     args = parser.parse_args()
 
     os.environ["PYTORCH_CUDA_ALLOC_CONF"] = "expandable_segments:True"
-    # device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
+    
     if torch.cuda.is_available():
         device = torch.device('cuda')
         device_type = 'cuda'
-    elif torch.backends.mps.is_available(): # Dành cho MacBook chip M1/M2/M3
+    elif torch.backends.mps.is_available(): 
         device = torch.device('mps')
         device_type = 'mps'
-    else: # Dành cho MacBook chip Intel
+    else: 
         device = torch.device('cpu')
         device_type = 'cpu'
     
@@ -279,6 +280,19 @@ def main():
     pooling = args.pooling
     pipeline_name = args.pipeline_name
 
+    # ==========================================
+    # 📝 TẠO FILE LOG VÀ GHI HEADER TRƯỚC
+    # ==========================================
+    os.makedirs("reports", exist_ok=True)
+    log_file_path = f"reports/{pipeline_name}_batch_experiment_{pooling}_summary.txt"
+    
+    # Mở file chế độ "w" (write) lần đầu để tạo file mới và ghi tiêu đề
+    with open(log_file_path, "w") as f:
+        f.write(f"Batch Experiment {pipeline_name} Results for pooling: {pooling}\n")
+        f.write("="*50 + "\n")
+        f.write(f"{'Backbone'.ljust(25)} | {'mAP'.ljust(6)} | {'Rank-1'.ljust(6)}\n")
+        f.write("-"*50 + "\n")
+
     for current_backbone in backbone_list:
         print(f"\n{'='*60}")
         print(f"🔥 ĐANG HUẤN LUYỆN: {current_backbone.upper()} - pooling: {pooling}")
@@ -288,26 +302,42 @@ def main():
         try:
             best_map, r1 = train_one_fold(args, fold, total_sub_classes, df_train, df_val, df_ref_gallery, device)
             results_summary[current_backbone] = (best_map, r1)
-        except:
-            results_summary[current_backbone] = (0.0, 0.0)
+            status = "SUCCESS"
+        except Exception as e:
+            print(f"❌ Đã có sự cố khi huấn luyện {current_backbone}")
+            print(f"Chi tiết lỗi: {e}") # In chi tiết lỗi ra màn hình
+            traceback.print_exc()     # In stack trace để dễ debug
+            
+            best_map, r1 = 0.0, 0.0
+            results_summary[current_backbone] = (best_map, r1)
+            status = "FAILED"
         
+        # ==========================================
+        # 📝 GHI APPEND NGAY LẬP TỨC SAU MỖI MODEL
+        # ==========================================
+        # Mở file chế độ "a" (append) để ghi nối tiếp vào cuối file
+        with open(log_file_path, "a") as f:
+            if status == "SUCCESS":
+                f.write(f"{current_backbone.ljust(25)} | {best_map:.4f} | {r1:.4f}\n")
+            else:
+                f.write(f"{current_backbone.ljust(25)} | 0.0000 | 0.0000 (ERROR)\n")
+        
+        # Dọn dẹp RAM/VRAM sau mỗi model
         gc.collect()
-        torch.cuda.empty_cache()
+        if torch.cuda.is_available():
+            torch.cuda.empty_cache()
 
+    # ==========================================
+    # 🏆 IN BẢNG TỔNG KẾT RA MÀN HÌNH SAU CÙNG
+    # ==========================================
     print("\n" + "="*50)
     print("🏆 BÁO CÁO TỔNG KẾT (FOLD 0)")
     print("="*50)
+    print(f"{'Backbone'.ljust(25)} | {'mAP'.ljust(6)} | {'Rank-1'.ljust(6)}")
     for bb, (mAP, r1) in results_summary.items():
-        print(f" - {bb.ljust(20)}: Best mAP = {mAP:.4f} Rank-1 = {r1:.4f}")
+        print(f"{bb.ljust(25)} | {mAP:.4f} | {r1:.4f} ")
     print("="*50)
-
-    
-    
-    os.makedirs("reports", exist_ok=True)
-    with open(f"reports/{pipeline_name}_batch_experiment_{pooling}_summary.txt", "w") as f:
-        f.write(f"Batch Experiment {pipeline_name} Results for pooling: {pooling}\n")
-        for bb, (mAP, r1) in results_summary.items():
-            f.write(f"{bb}: {mAP:.4f} - {r1:.4f}\n")
+    print(f"📁 Toàn bộ kết quả đã được lưu an toàn tại: {log_file_path}")
 
 if __name__ == '__main__':
     main()
