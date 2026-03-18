@@ -16,64 +16,112 @@ class PillRetrievalModel(nn.Module):
         self.m = m 
         self.pooling_type = pooling_type.lower()
         
+
         # ==========================================
-        # 🚀 CƠ CHẾ KHỞI TẠO ĐỘNG (BẢN CHỐT THỰC NGHIỆM)
+        # 🚀 CƠ CHẾ KHỞI TẠO ĐỘNG (HỖ TRỢ ABLATION STUDY _TV / _TIMM)
         # ==========================================
         backbone_lower = backbone_type.lower()
         
-        # ---------------------------------------------------------
-        # 👑 ĐƯỜNG ƯU TIÊN 1: TRẢ LẠI BẢN HACK CỦA BẠN CHO RESNET
-        # (Không dùng Dilation để tránh lọt khe mất chữ dập)
-        # ---------------------------------------------------------
-        if backbone_lower in ['resnet18', 'resnet34', 'resnet50', 'resnet101']:
-            print(f"🌟 SỬ DỤNG TORCHVISION: Đang load {backbone_type} với Stride=1 thủ công (Dense Sampling)")
-            base_model_func = getattr(models, backbone_lower)
-            base = base_model_func(weights='DEFAULT')
+        # 1. Bắt hậu tố điều hướng
+        force_tv = False
+        force_timm = False
+        
+        if backbone_lower.endswith('_tv'):
+            force_tv = True
+            backbone_lower = backbone_lower.replace('_tv', '')
+        elif backbone_lower.endswith('_timm'):
+            force_timm = True
+            backbone_lower = backbone_lower.replace('_timm', '')
             
-            if backbone_lower in ['resnet18', 'resnet34']:
-                base.layer4[0].conv1.stride = (1, 1)
-            else:
-                base.layer4[0].conv2.stride = (1, 1)
-            base.layer4[0].downsample[0].stride = (1, 1)
-            
-            self.features = nn.Sequential(*list(base.children())[:-2])
+        # Chuẩn hóa tên cho Torchvision (nếu cần dùng)
+        tv_name = backbone_lower
+        if 'mobilenetv3' in tv_name: tv_name = 'mobilenet_v3_large'
+        elif 'mobilenetv2' in tv_name: tv_name = 'mobilenet_v2'
+        elif 'efficientnetv2' in tv_name: tv_name = tv_name.replace('efficientnetv2', 'efficientnet_v2')
 
-        # ---------------------------------------------------------
-        # 👑 ĐƯỜNG ƯU TIÊN 2: BẢO TOÀN LỚP FEATURES CHO MOBILENET
-        # ---------------------------------------------------------
-        elif backbone_lower in ['mobilenet_v3_large', 'mobilenetv3_large_100', 'mobilenet_v2', 'mobilenetv2_100']:
-            # Xử lý đồng nhất tên gọi cho torchvision
-            tv_name = 'mobilenet_v3_large' if 'v3' in backbone_lower else 'mobilenet_v2'
-            print(f"🌟 SỬ DỤNG TORCHVISION: Đang load {tv_name} để giữ nguyên khối đặc trưng")
-            base_model_func = getattr(models, tv_name)
-            base = base_model_func(weights='DEFAULT')
-            self.features = base.features
+        try:
+            # ---------------------------------------------------------
+            # 🛑 NHÁNH 1: ÉP BUỘC DÙNG TORCHVISION (Khi có đuôi _tv)
+            # ---------------------------------------------------------
+            if force_tv:
+                print(f"🌟 THỰC NGHIỆM: Ép load {backbone_lower} bằng TORCHVISION")
+                base_model_func = getattr(models, tv_name)
+                base = base_model_func(weights='DEFAULT')
+                
+                # Áp dụng Hack Stride cho ResNet thuần
+                if 'resnet' in tv_name and not any(x in tv_name for x in ['seresnet', 'resnest', 'tresnet']):
+                    if tv_name in ['resnet18', 'resnet34']:
+                        base.layer4[0].conv1.stride = (1, 1)
+                    else:
+                        base.layer4[0].conv2.stride = (1, 1)
+                    base.layer4[0].downsample[0].stride = (1, 1)
+                    self.features = nn.Sequential(*list(base.children())[:-2])
+                elif hasattr(base, 'features'):
+                    self.features = base.features
+                else:
+                    self.features = nn.Sequential(*list(base.children())[:-2])
 
-        # ---------------------------------------------------------
-        # ⚡ ĐƯỜNG CHUNG CHO TIMM (CÁC MẠNG HIỆN ĐẠI/TRANSFORMER)
-        # ---------------------------------------------------------
-        else:
-            try:
-                # Họ ResNeSt, SEResNet vẫn có thể thử Dilation xem sao (nếu rớt mAP, ta sẽ đưa lên nhóm trên sau)
-                if any(x in backbone_lower for x in ['resnest', 'seresnet', 'tresnet']):
-                    print(f"⚡ DÙNG TIMM: Load {backbone_type} với output_stride=16")
+            # ---------------------------------------------------------
+            # 🛑 NHÁNH 2: ÉP BUỘC DÙNG TIMM (Khi có đuôi _timm)
+            # ---------------------------------------------------------
+            elif force_timm:
+                print(f"⚡ THỰC NGHIỆM: Ép load {backbone_lower} bằng TIMM")
+                # Vẫn giữ nguyên Dilation cho các mạng có hỗ trợ để so sánh công bằng
+                if any(x in backbone_lower for x in ['resnet', 'resnest', 'seresnet', 'tresnet', 'mobilenet']) and 'convnext' not in backbone_lower:
                     self.features = timm.create_model(backbone_lower, pretrained=True, num_classes=0, global_pool='', output_stride=16)
                 else:
-                    print(f"⚡ DÙNG TIMM: Load {backbone_type} với cấu trúc mặc định")
                     self.features = timm.create_model(backbone_lower, pretrained=True, num_classes=0, global_pool='')
-                    
-            except Exception as e_timm:
-                print(f"⚠️ TIMM không chứa '{backbone_type}'. Tìm kiếm dự phòng trong Torchvision...")
-                try:
-                    # Dự phòng cho DenseNet, SqueezeNet...
+
+            # ---------------------------------------------------------
+            # 🌊 NHÁNH 3: AUTO-ROUTING (Không có hậu tố - Chạy tối ưu như cũ)
+            # ---------------------------------------------------------
+            else:
+                if backbone_lower in ['resnet18', 'resnet34', 'resnet50', 'resnet101']:
+                    print(f"🌟 AUTO: Load {backbone_lower} bằng TORCHVISION (Hack Stride=1)")
                     base_model_func = getattr(models, backbone_lower)
                     base = base_model_func(weights='DEFAULT')
-                    if hasattr(base, 'features'):
-                        self.features = base.features
+                    if backbone_lower in ['resnet18', 'resnet34']:
+                        base.layer4[0].conv1.stride = (1, 1)
                     else:
-                        self.features = nn.Sequential(*list(base.children())[:-2])
-                except Exception as e_tv:
-                    raise ValueError(f"❌ KHÔNG TÌM THẤY '{backbone_type}'. Lỗi chi tiết: {e_tv}")
+                        base.layer4[0].conv2.stride = (1, 1)
+                    base.layer4[0].downsample[0].stride = (1, 1)
+                    self.features = nn.Sequential(*list(base.children())[:-2])
+
+                elif any(x in backbone_lower for x in ['mobilenet', 'efficientnet']):
+                    print(f"🌟 AUTO: Load {tv_name} bằng TORCHVISION (Lấy tạ nguyên thủy)")
+                    try:
+                        base_model_func = getattr(models, tv_name)
+                        base = base_model_func(weights='DEFAULT')
+                        self.features = base.features
+                    except Exception as e:
+                        self.features = timm.create_model(backbone_lower, pretrained=True, num_classes=0, global_pool='')
+
+                else:
+                    # LƯỚI AN TOÀN ĐÃ ĐƯỢC THÊM LẠI Ở ĐÂY
+                    try:
+                        if any(x in backbone_lower for x in ['resnest', 'seresnet', 'tresnet']):
+                            print(f"⚡ AUTO: Load {backbone_lower} bằng TIMM (Output Stride 16)")
+                            self.features = timm.create_model(backbone_lower, pretrained=True, num_classes=0, global_pool='', output_stride=16)
+                        else:
+                            print(f"⚡ AUTO: Load {backbone_lower} bằng TIMM (Mặc định)")
+                            self.features = timm.create_model(backbone_lower, pretrained=True, num_classes=0, global_pool='')
+                    
+                    except Exception as e_timm:
+                        print(f"⚠️ TIMM không chứa '{backbone_lower}'. Tự động tìm kiếm dự phòng trong TORCHVISION...")
+                        try:
+                            # Cứu cánh cho SqueezeNet, ShuffleNet...
+                            base_model_func = getattr(models, backbone_lower)
+                            base = base_model_func(weights='DEFAULT')
+                            if hasattr(base, 'features'):
+                                self.features = base.features
+                            else:
+                                self.features = nn.Sequential(*list(base.children())[:-2])
+                            print(f"🌟 SỬ DỤNG TORCHVISION: Đã load thành công {backbone_lower}")
+                        except Exception as e_tv:
+                            raise ValueError(f"❌ Hoàn toàn không tìm thấy '{backbone_lower}'. Lỗi TIMM: {e_timm} | Lỗi TV: {e_tv}")
+
+        except Exception as e:
+            raise ValueError(f"❌ KHÔNG TÌM THẤY '{backbone_type}' hoặc lỗi khởi tạo. Chi tiết: {e}")
 
         # Tự động trích xuất số lượng kênh bằng Dummy Tensor (Size 384x384 để an toàn cho Swin/MaxViT)
         with torch.no_grad():
