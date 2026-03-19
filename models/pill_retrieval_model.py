@@ -66,8 +66,8 @@ class PillRetrievalModel(nn.Module):
             # ---------------------------------------------------------
             elif force_timm:
                 print(f"⚡ THỰC NGHIỆM: Ép load {backbone_lower} bằng TIMM")
-                # Vẫn giữ nguyên Dilation cho các mạng có hỗ trợ để so sánh công bằng
-                if any(x in backbone_lower for x in ['resnet', 'resnest', 'seresnet', 'tresnet', 'mobilenet']) and 'convnext' not in backbone_lower:
+                # CHỈ áp dụng Dilation cho ResNet, ResNeSt, SEResNet. TUYỆT ĐỐI KHÔNG ép TResNet hay MobileNet
+                if any(x in backbone_lower for x in ['resnet', 'resnest', 'seresnet']) and not any(x in backbone_lower for x in ['tresnet', 'convnext', 'mobilenet']):
                     self.features = timm.create_model(backbone_lower, pretrained=True, num_classes=0, global_pool='', output_stride=16)
                 else:
                     self.features = timm.create_model(backbone_lower, pretrained=True, num_classes=0, global_pool='')
@@ -88,7 +88,7 @@ class PillRetrievalModel(nn.Module):
                     self.features = nn.Sequential(*list(base.children())[:-2])
 
                 elif any(x in backbone_lower for x in ['mobilenet', 'efficientnet']):
-                    print(f"🌟 AUTO: Load {tv_name} bằng TORCHVISION (Lấy tạ nguyên thủy)")
+                    print(f"🌟 AUTO: Load {tv_name} bằng TORCHVISION (Lấy weight classic)")
                     try:
                         base_model_func = getattr(models, tv_name)
                         base = base_model_func(weights='DEFAULT')
@@ -99,7 +99,7 @@ class PillRetrievalModel(nn.Module):
                 else:
                     # LƯỚI AN TOÀN ĐÃ ĐƯỢC THÊM LẠI Ở ĐÂY
                     try:
-                        if any(x in backbone_lower for x in ['resnest', 'seresnet', 'tresnet']):
+                        if any(x in backbone_lower for x in ['resnet', 'resnest', 'seresnet']) and not any(x in backbone_lower for x in ['tresnet', 'convnext', 'mobilenet']):
                             print(f"⚡ AUTO: Load {backbone_lower} bằng TIMM (Output Stride 16)")
                             self.features = timm.create_model(backbone_lower, pretrained=True, num_classes=0, global_pool='', output_stride=16)
                         else:
@@ -118,17 +118,21 @@ class PillRetrievalModel(nn.Module):
                                 self.features = nn.Sequential(*list(base.children())[:-2])
                             print(f"🌟 SỬ DỤNG TORCHVISION: Đã load thành công {backbone_lower}")
                         except Exception as e_tv:
-                            raise ValueError(f"❌ Hoàn toàn không tìm thấy '{backbone_lower}'. Lỗi TIMM: {e_timm} | Lỗi TV: {e_tv}")
+                            raise ValueError(f"Hoàn toàn không tìm thấy {backbone_lower}. Lỗi TIMM: {e_timm} | Lỗi TV: {e_tv}")
 
         except Exception as e:
-            raise ValueError(f"❌ KHÔNG TÌM THẤY '{backbone_type}' hoặc lỗi khởi tạo. Chi tiết: {e}")
+            raise ValueError(f"❌ KHÔNG TÌM THẤY {backbone_type} hoặc lỗi khởi tạo. Chi tiết: {e}")
 
+        # Bật chế độ Eval để tránh lỗi BatchNorm với Batch Size = 1 của họ ResNeSt
+        self.features.eval()
         # Tự động trích xuất số lượng kênh bằng Dummy Tensor (Size 384x384 để an toàn cho Swin/MaxViT)
         with torch.no_grad():
             dummy_input = torch.zeros(1, 3, 384, 384)
             dummy_feat = self.features(dummy_input)
             in_channels = dummy_feat.shape[1] 
-            
+        
+        # Trả lại chế độ Train bình thường
+        self.features.train()
         print(f"✅ HOÀN TẤT KHỞI TẠO! Channels: {in_channels} | Pooling: {self.pooling_type.upper()}")
 
         # ==========================================

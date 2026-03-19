@@ -39,7 +39,7 @@ def train_one_fold(args, f_idx, num_classes, df_train, df_val, df_ref, device):
         lr_backbone, lr_head = 1e-5, 1e-4  # Mạng to cần LR nhỏ để tránh sốc Gradient
 
     # 2. NHÓM NẶNG (LARGE/BASE): 40M - 100M Tham số
-    elif any(x in backbone_name for x in ['base', 'b5', 'resnet101', 'resnet152', 'resnext101']):
+    elif any(x in backbone_name for x in ['base', 'b5', 'resnet101', 'resnet152', 'resnext101', 'densenet161', 'seresnext101_32x4d']):
         img_size = 384
         n_classes_batch, n_samples = 4, 2  # Physical Batch = 8 ảnh
         accumulation_steps = 16            # Effective Batch = 8 * 16 = 128
