@@ -23,80 +23,64 @@ from utils.data_utils import load_epill_full_data
 
 def train_one_fold(args, f_idx, num_classes, df_train, df_val, df_ref, device):
     L_SCE, L_CSCE, L_TRIPLET, L_CONTRASTIVE = 1.0, 0.2, 1.0, 1.0
-    USE_SHAPE_LOSS, L_SHAPE = False, 1.0 # Enable need more GPU cause 2 model embedding 
-    # debug
-    L_CONTRASTIVE = 0.0
-
-    # XÓA ĐOẠN IF/ELIF CŨ VÀ DÒNG img_size = 384 GHI ĐÈ ĐI, THAY BẰNG ĐOẠN NÀY:
+    USE_SHAPE_LOSS, L_SHAPE = False, 1.0 
     
+    # Đã xóa dòng L_CONTRASTIVE = 0.0 (debug) để mô hình học đầy đủ
+
     backbone_name = args.backbone.lower()
     
-    # 1. NHÓM SIÊU NẶNG (XLARGE): > 100 Triệu Tham số (OOM Risk: High)
-    if any(x in backbone_name for x in ['xlarge', 'large', 'b6', 'b7', 'v2_l']):
-        img_size = 384
-        n_classes_batch, n_samples = 2, 2  # Physical Batch = 4 ảnh
-        accumulation_steps = 32            # Effective Batch = 4 * 32 = 128
-        lr_backbone, lr_head = 1e-5, 1e-4  # Mạng to cần LR nhỏ để tránh sốc Gradient
-
-    # 2. NHÓM NẶNG (LARGE/BASE): 40M - 100M Tham số
-    elif any(x in backbone_name for x in ['base', 'b5', 'resnet101', 'resnet152', 'resnext101', 'densenet161', 'seresnext101_32x4d']):
-        img_size = 384
-        n_classes_batch, n_samples = 4, 2  # Physical Batch = 8 ảnh
-        accumulation_steps = 16            # Effective Batch = 8 * 16 = 128
-        lr_backbone, lr_head = 2e-5, 2e-4
-
-    # 3. NHÓM TRUNG BÌNH (MEDIUM): 15M - 40M Tham số
-    elif any(x in backbone_name for x in ['resnet50', 'b3', 'b4', 'nfnet']):
-        img_size = 384
-        n_classes_batch, n_samples = 8, 2  # Physical Batch = 16 ảnh
-        accumulation_steps = 8             # Effective Batch = 16 * 8 = 128
-        lr_backbone, lr_head = 3e-5, 3e-4
-
-    # 4. NHÓM SIÊU NHẸ (LIGHTWEIGHT/TINY): < 15M Tham số (Student Models)
-    else: # Bao gồm: resnet18, mobilenet, shufflenet, ghostnet, b0, b1, atto, femto, pico...
-        img_size = 384
-        # Mạng nhỏ VRAM dư dả, ta nhồi Batch to vào để train cực nhanh
-        n_classes_batch, n_samples = 16, 2 # Physical Batch = 32 ảnh
-        accumulation_steps = 4             # Effective Batch = 32 * 4 = 128
-        lr_backbone, lr_head = 5e-5, 5e-4  # Mạng nhỏ cần LR to hơn một chút để học nhanh
-
-    print(f"⚙️ Config {args.backbone}: Size={img_size}x{img_size} | Physical Batch={n_classes_batch*n_samples} | Accum={accumulation_steps} | Eff Batch={n_classes_batch*n_samples*accumulation_steps}")
-
-
-
+    # -----------------------------------------------------
+    # 🛡️ 1. CẬP NHẬT LƯỚI LỌC MỚI (Tránh nổ VRAM)
+    # -----------------------------------------------------
+    super_large_backbones = [
+        'efficientnetv2_l', 'convnext_large', 'vit_large', 'swin_large', 'maxvit_base'
+    ]
+    large_backbones = [
+        'resnet101', 'seresnext101_32x4d', 'resnest101e', 'swin_base', 'coatnet',
+        'convnext_base', 'convnextv2_base', 'vit_base', 'tresnet_l'
+    ]
+    medium_backbones = [
+        'densenet161', 'efficientnet_b5', 'nfnet_l0', 'resnet50', 'resnet34'
+    ]
+    # 4. NHÓM SIÊU NHẸ (LIGHTWEIGHT/TINY): < 15M Tham số
+    small_backbones = [
+        'squeezenet1_1', 'resnet18', 'densenet121', 'mobilenetv2_100',
+        'mobilenetv3_large_100', 'shufflenet_v2_x1_0', 'ghostnet_100', 'regnety_004',
+        'efficientnet_b0', 'efficientnet_b1', 'repvgg_a0',
+        'convnext_atto', 'convnextv2_atto', 'convnext_femto', 'mobilevit_s'
+    ]
     
-    # # ĐỘNG: QUẢN LÝ VRAM THEO BACKBONE
-    # if 'convnext_large' in args.backbone:
-    #     img_size = 384
-    #     n_classes_batch, n_samples = 4, 2  
-    #     accumulation_steps = 16            
-    #     lr_backbone, lr_head = 2e-5, 2e-4
-    # elif 'convnext_base' in args.backbone:
-    #     img_size = 384
-    #     n_classes_batch, n_samples = 8, 2  
-    #     accumulation_steps = 8             
-    #     lr_backbone, lr_head = 3e-5, 3e-4
-    # elif 'resnet101' in args.backbone:
-    #     img_size = 448
-    #     n_classes_batch, n_samples = 8, 2  
-    #     accumulation_steps = 8
-    #     lr_backbone, lr_head = 3e-5, 3e-4
-    # elif 'resnet18' in args.backbone:
-    #     img_size = 384
-    #     n_classes_batch, n_samples = 16, 2 
-    #     accumulation_steps = 4
-    #     lr_backbone, lr_head = 4e-5, 4e-4
-    # else: 
-    #     img_size = 448
-    #     n_classes_batch, n_samples = 16, 2 
-    #     accumulation_steps = 4
-    #     lr_backbone, lr_head = 4e-5, 4e-4
+    # PHÂN BỔ TÀI NGUYÊN ĐỘNG
+    if any(x in backbone_name for x in super_large_backbones):
+        n_classes_batch, n_samples = 2, 2  # Physical Batch = 4 ảnh
+        accumulation_steps = 32            # Effective Batch = 128
+        lr_backbone, lr_head = 1e-5, 1e-4  
+    elif any(x in backbone_name for x in large_backbones):
+        n_classes_batch, n_samples = 4, 2  # Physical Batch = 8 ảnh
+        accumulation_steps = 16            # Effective Batch = 128
+        lr_backbone, lr_head = 2e-5, 2e-4
+    elif any(x in backbone_name for x in medium_backbones):
+        n_classes_batch, n_samples = 8, 2  # Physical Batch = 16 ảnh
+        accumulation_steps = 8             # Effective Batch = 128
+        lr_backbone, lr_head = 3e-5, 3e-4
+    else: 
+        n_classes_batch, n_samples = 16, 2 # Physical Batch = 32 ảnh
+        accumulation_steps = 4             # Effective Batch = 128
+        lr_backbone, lr_head = 5e-5, 5e-4  
 
-    # img_size = 384 # hard size as limit of hardward
-    # print(f"⚙️ Config {args.backbone}: Size={img_size}x{img_size} | Batch={n_classes_batch*n_samples} | Accum={accumulation_steps}")
-
+    # -----------------------------------------------------
+    # 🛡️ 2. TỰ ĐỘNG CHỈNH SIZE CHO DINOv2 / ViT (Chống lỗi Patch)
+    # -----------------------------------------------------
+    img_size = 384
+    if 'patch14' in backbone_name:
+        img_size = 392 # 392 chia hết cho 14 (14 * 28)
+        print(f"⚠️ Phát hiện ViT Patch14: Tự động nâng Image Size lên {img_size}x{img_size}")
+    elif 'patch16' in backbone_name:
+        img_size = 384 # 384 chia hết cho 16, giữ nguyên
     resize_scale = int(img_size * 1.15) 
-
+    
+    print(f"⚙️ Config {args.backbone}: Size={img_size}x{img_size} | Batch={n_classes_batch*n_samples} | Accum={accumulation_steps}")
+    
     # DUAL TRANSFORM
     train_transform = transforms.Compose([
         transforms.Resize((resize_scale, resize_scale)),
@@ -136,48 +120,59 @@ def train_one_fold(args, f_idx, num_classes, df_train, df_val, df_ref, device):
         batch_size=n_classes_batch * n_samples, shuffle=False, num_workers=4, pin_memory=True
     )
 
-    model = PillRetrievalModel(num_classes=num_classes, backbone_type=args.backbone,pooling_type=args.pooling).to(device)
+    model = PillRetrievalModel(num_classes=num_classes, backbone_type=args.backbone, pooling_type=args.pooling).to(device)
 
     criterion_sce = nn.CrossEntropyLoss(label_smoothing=0.1)
     criterion_triplet = losses.TripletMarginLoss(margin=0.3)
     criterion_contrastive = losses.ContrastiveLoss(pos_margin=0, neg_margin=1)
     miner = miners.TripletMarginMiner(margin=0.2, type_of_triplets="semihard")
-
-    # Use for shape
     criterion_shape = nn.MSELoss()
 
     backbone_params = [p for n, p in model.named_parameters() if 'features' in n]
     head_params = [p for n, p in model.named_parameters() if 'features' not in n]
 
+    # TRỪNG PHẠT TẠ ĐỘNG (Dynamic Weight Decay) ĐỂ CHỐNG OVERFITTING CHO MẠNG LỚN
+    wd_value = 0.1 if any(x in backbone_name for x in ['large', 'xlarge']) else 5e-2
+
     optimizer = torch.optim.AdamW([
         {'params': backbone_params, 'lr': lr_backbone}, 
         {'params': head_params, 'lr': lr_head}
-    ], weight_decay=5e-2)
+    ], weight_decay=wd_value)
     
     TOTAL_EPOCHS = 60 
     WARMUP_EPOCHS = 5
-    # 1. Warm-up từ từ trong 5 Epoch đầu
+    
     warmup_scheduler = torch.optim.lr_scheduler.LinearLR(
         optimizer, start_factor=0.01, total_iters=WARMUP_EPOCHS
     )
-    
-    # 2. Cosine Annealing cho 55 Epoch còn lại
     cosine_scheduler = torch.optim.lr_scheduler.CosineAnnealingLR(
         optimizer, T_max=(TOTAL_EPOCHS - WARMUP_EPOCHS), eta_min=1e-6
     )
-    
-    # 3. Nối 2 cái lại với nhau
     scheduler = torch.optim.lr_scheduler.SequentialLR(
-        optimizer, 
-        schedulers=[warmup_scheduler, cosine_scheduler], 
-        milestones=[WARMUP_EPOCHS]
+        optimizer, schedulers=[warmup_scheduler, cosine_scheduler], milestones=[WARMUP_EPOCHS]
     )
 
     scaler = torch.amp.GradScaler('cuda')
-
-    best_val_map,r1 = 0.0, 0.0
+    best_val_map, r1 = 0.0, 0.0
 
     for epoch in range(1, TOTAL_EPOCHS + 1):
+        # ==========================================
+        # 🛡️ HEAD WARM-UP (BẢO VỆ MẠNG YẾU & MẠNG QUÁ TO)
+        # ==========================================
+        is_fragile = any(x in backbone_name for x in ['mobilenet', 'ghostnet'])
+        is_massive = any(x in backbone_name for x in ['large', 'xlarge'])
+        
+        if is_fragile or is_massive:
+            freeze_epochs = 2 if is_fragile else 4 
+            if epoch <= freeze_epochs:
+                print(f"🔒 Epoch {epoch}: ĐÓNG BĂNG Backbone, chỉ train Head!")
+                for param in model.features.parameters():
+                    param.requires_grad = False
+            elif epoch == freeze_epochs + 1:
+                print(f"🔓 Epoch {epoch}: MỞ KHÓA Backbone, train toàn bộ mạng!")
+                for param in model.features.parameters():
+                    param.requires_grad = True
+
         model.train()
         total_loss = 0
         pbar = tqdm(train_loader, desc=f"{args.backbone} | Fold {f_idx} | Ep {epoch}")
@@ -187,8 +182,7 @@ def train_one_fold(args, f_idx, num_classes, df_train, df_val, df_ref, device):
         for i, (imgs, sub_labels, labels, _) in enumerate(pbar):
             imgs = imgs.to(device)
             sub_labels = sub_labels.to(device).long()
-            # 1. Tự động tạo ra phiên bản ảnh Xám ngay trong vòng lặp
-            # Chú ý: Ảnh xám chỉ có 1 kênh màu, ta phải repeat nó lên 3 kênh để đưa vào ResNet
+            
             imgs_gray = TF.rgb_to_grayscale(imgs, num_output_channels=3)
 
             with torch.amp.autocast('cuda'):
@@ -200,23 +194,29 @@ def train_one_fold(args, f_idx, num_classes, df_train, df_val, df_ref, device):
                 loss_contrastive = criterion_contrastive(norm_embedding_rgb, sub_labels)
 
                 # ==================================================
-                # 4. THÊM SHAPE-CONSISTENCY LOSS (Ý TƯỞNG CỦA BẠN)
+                # 🛡️ SHAPE-CONSISTENCY LOSS (AN TOÀN VRAM Tuyệt Đối)
                 # ==================================================
-                # Ép vector ảnh màu phải giống hệt vector ảnh xám
                 if USE_SHAPE_LOSS:
-                    _, _, norm_embedding_gray = model(imgs_gray, labels=sub_labels) # Chỉ lấy embedding của ảnh xám
-                    loss_shape = criterion_shape(norm_embedding_rgb, norm_embedding_gray)
+                    with torch.no_grad(): # CHẶN TÍNH TOÁN GRADIENT NHÁNH XÁM
+                        _, _, norm_embedding_gray = model(imgs_gray, labels=sub_labels) 
+                    # BẮT BUỘC dùng .detach()
+                    loss_shape = criterion_shape(norm_embedding_rgb, norm_embedding_gray.detach())
                 else:
                     loss_shape = 0.0
                 
-                # 5. Tổng hợp Loss (Thêm hệ số L_SHAPE, ví dụ 1.0)
                 loss = (L_SCE * loss_sce + L_CSCE * loss_csce + L_TRIPLET * loss_triplet + L_CONTRASTIVE * loss_contrastive + L_SHAPE * loss_shape) / accumulation_steps
             
             scaler.scale(loss).backward()
 
             if (i + 1) % accumulation_steps == 0 or (i + 1) == len(train_loader):
                 scaler.unscale_(optimizer)
-                torch.nn.utils.clip_grad_norm_(model.parameters(), max_norm=5.0)
+                
+                # ==================================================
+                # 🛡️ BÓP GRADIENT GẮT HƠN CHO MẠNG MỎNG MANH
+                # ==================================================
+                clip_val = 1.0 if any(x in backbone_name for x in ['mobilenet', 'ghostnet']) else 5.0
+                torch.nn.utils.clip_grad_norm_(model.parameters(), max_norm=clip_val)
+                
                 scaler.step(optimizer)
                 scaler.update()
                 optimizer.zero_grad()
@@ -227,7 +227,6 @@ def train_one_fold(args, f_idx, num_classes, df_train, df_val, df_ref, device):
         scheduler.step()
 
         if (epoch % 5 == 0) or (epoch > TOTAL_EPOCHS - 10):
-            # Mặc định sử dụng Both Sides để lưu Model tốt nhất
             val_metrics = evaluate_retrieval(model, val_loader, device, flag_both_side=True)
             val_map = val_metrics['mAP']
             val_r1 = val_metrics['Rank-1']

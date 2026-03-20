@@ -5,7 +5,7 @@ import math
 from torchvision import models
 import timm
 import os, sys
-# Import local modules
+
 sys.path.append(os.path.abspath(os.path.join(os.path.dirname(__file__), '..')))
 from middle.pooling import GeMPooling, MPNCOV
 
@@ -16,129 +16,35 @@ class PillRetrievalModel(nn.Module):
         self.m = m 
         self.pooling_type = pooling_type.lower()
         
+        # Xác định xem mạng có phải là Vision Transformer thuần túy hay không
+        clean_name = backbone_type.lower().replace('_tv', '').replace('_timm', '')
+        self.is_pure_vit = 'vit' in clean_name and not any(x in clean_name for x in ['maxvit', 'mobilevit'])
 
-        # ==========================================
-        # 🚀 CƠ CHẾ KHỞI TẠO ĐỘNG (HỖ TRỢ ABLATION STUDY _TV / _TIMM)
-        # ==========================================
-        backbone_lower = backbone_type.lower()
-        
-        # 1. Bắt hậu tố điều hướng
-        force_tv = False
-        force_timm = False
-        
-        if backbone_lower.endswith('_tv'):
-            force_tv = True
-            backbone_lower = backbone_lower.replace('_tv', '')
-        elif backbone_lower.endswith('_timm'):
-            force_timm = True
-            backbone_lower = backbone_lower.replace('_timm', '')
-            
-        # Chuẩn hóa tên cho Torchvision (nếu cần dùng)
-        tv_name = backbone_lower
-        if 'mobilenetv3' in tv_name: tv_name = 'mobilenet_v3_large'
-        elif 'mobilenetv2' in tv_name: tv_name = 'mobilenet_v2'
-        elif 'efficientnetv2' in tv_name: tv_name = tv_name.replace('efficientnetv2', 'efficientnet_v2')
+        # 1. KHỞI TẠO BACKBONE
+        self.features = self._build_backbone(backbone_type)
 
-        try:
-            # ---------------------------------------------------------
-            # 🛑 NHÁNH 1: ÉP BUỘC DÙNG TORCHVISION (Khi có đuôi _tv)
-            # ---------------------------------------------------------
-            if force_tv:
-                print(f"🌟 THỰC NGHIỆM: Ép load {backbone_lower} bằng TORCHVISION")
-                base_model_func = getattr(models, tv_name)
-                base = base_model_func(weights='DEFAULT')
-                
-                # Áp dụng Hack Stride cho ResNet thuần
-                if 'resnet' in tv_name and not any(x in tv_name for x in ['seresnet', 'resnest', 'tresnet']):
-                    if tv_name in ['resnet18', 'resnet34']:
-                        base.layer4[0].conv1.stride = (1, 1)
-                    else:
-                        base.layer4[0].conv2.stride = (1, 1)
-                    base.layer4[0].downsample[0].stride = (1, 1)
-                    self.features = nn.Sequential(*list(base.children())[:-2])
-                elif hasattr(base, 'features'):
-                    self.features = base.features
-                else:
-                    self.features = nn.Sequential(*list(base.children())[:-2])
-
-            # ---------------------------------------------------------
-            # 🛑 NHÁNH 2: ÉP BUỘC DÙNG TIMM (Khi có đuôi _timm)
-            # ---------------------------------------------------------
-            elif force_timm:
-                print(f"⚡ THỰC NGHIỆM: Ép load {backbone_lower} bằng TIMM")
-                # CHỈ áp dụng Dilation cho ResNet, ResNeSt, SEResNet. TUYỆT ĐỐI KHÔNG ép TResNet hay MobileNet
-                if any(x in backbone_lower for x in ['resnet', 'resnest', 'seresnet']) and not any(x in backbone_lower for x in ['tresnet', 'convnext', 'mobilenet']):
-                    self.features = timm.create_model(backbone_lower, pretrained=True, num_classes=0, global_pool='', output_stride=16)
-                else:
-                    self.features = timm.create_model(backbone_lower, pretrained=True, num_classes=0, global_pool='')
-
-            # ---------------------------------------------------------
-            # 🌊 NHÁNH 3: AUTO-ROUTING (Không có hậu tố - Chạy tối ưu như cũ)
-            # ---------------------------------------------------------
-            else:
-                if backbone_lower in ['resnet18', 'resnet34', 'resnet50', 'resnet101']:
-                    print(f"🌟 AUTO: Load {backbone_lower} bằng TORCHVISION (Hack Stride=1)")
-                    base_model_func = getattr(models, backbone_lower)
-                    base = base_model_func(weights='DEFAULT')
-                    if backbone_lower in ['resnet18', 'resnet34']:
-                        base.layer4[0].conv1.stride = (1, 1)
-                    else:
-                        base.layer4[0].conv2.stride = (1, 1)
-                    base.layer4[0].downsample[0].stride = (1, 1)
-                    self.features = nn.Sequential(*list(base.children())[:-2])
-
-                elif any(x in backbone_lower for x in ['mobilenet', 'efficientnet']):
-                    print(f"🌟 AUTO: Load {tv_name} bằng TORCHVISION (Lấy weight classic)")
-                    try:
-                        base_model_func = getattr(models, tv_name)
-                        base = base_model_func(weights='DEFAULT')
-                        self.features = base.features
-                    except Exception as e:
-                        self.features = timm.create_model(backbone_lower, pretrained=True, num_classes=0, global_pool='')
-
-                else:
-                    # LƯỚI AN TOÀN ĐÃ ĐƯỢC THÊM LẠI Ở ĐÂY
-                    try:
-                        if any(x in backbone_lower for x in ['resnet', 'resnest', 'seresnet']) and not any(x in backbone_lower for x in ['tresnet', 'convnext', 'mobilenet']):
-                            print(f"⚡ AUTO: Load {backbone_lower} bằng TIMM (Output Stride 16)")
-                            self.features = timm.create_model(backbone_lower, pretrained=True, num_classes=0, global_pool='', output_stride=16)
-                        else:
-                            print(f"⚡ AUTO: Load {backbone_lower} bằng TIMM (Mặc định)")
-                            self.features = timm.create_model(backbone_lower, pretrained=True, num_classes=0, global_pool='')
-                    
-                    except Exception as e_timm:
-                        print(f"⚠️ TIMM không chứa '{backbone_lower}'. Tự động tìm kiếm dự phòng trong TORCHVISION...")
-                        try:
-                            # Cứu cánh cho SqueezeNet, ShuffleNet...
-                            base_model_func = getattr(models, backbone_lower)
-                            base = base_model_func(weights='DEFAULT')
-                            if hasattr(base, 'features'):
-                                self.features = base.features
-                            else:
-                                self.features = nn.Sequential(*list(base.children())[:-2])
-                            print(f"🌟 SỬ DỤNG TORCHVISION: Đã load thành công {backbone_lower}")
-                        except Exception as e_tv:
-                            raise ValueError(f"Hoàn toàn không tìm thấy {backbone_lower}. Lỗi TIMM: {e_timm} | Lỗi TV: {e_tv}")
-
-        except Exception as e:
-            raise ValueError(f"❌ KHÔNG TÌM THẤY {backbone_type} hoặc lỗi khởi tạo. Chi tiết: {e}")
-
-        # Bật chế độ Eval để tránh lỗi BatchNorm với Batch Size = 1 của họ ResNeSt
-        self.features.eval()
-        # Tự động trích xuất số lượng kênh bằng Dummy Tensor (Size 384x384 để an toàn cho Swin/MaxViT)
+        # 2. ĐẾM KÊNH BẰNG DUMMY INPUT ĐỘNG
+        self.features.eval() 
         with torch.no_grad():
-            dummy_input = torch.zeros(1, 3, 384, 384)
-            dummy_feat = self.features(dummy_input)
-            in_channels = dummy_feat.shape[1] 
-        
-        # Trả lại chế độ Train bình thường
-        self.features.train()
-        print(f"✅ HOÀN TẤT KHỞI TẠO! Channels: {in_channels} | Pooling: {self.pooling_type.upper()}")
+            # Tự động chọn kích thước an toàn cho Patch14
+            safe_size = 392 if 'patch14' in clean_name else 384
+            dummy_input = torch.zeros(1, 3, safe_size, safe_size)
+            dummy_out = self.features(dummy_input)
+            
+            # Xử lý hình dạng Tensor đầu ra
+            if isinstance(dummy_out, tuple): 
+                dummy_out = dummy_out[0]
+                
+            if dummy_out.dim() == 2: # ViT trả về (Batch, Channels)
+                in_channels = dummy_out.shape[1]
+            else: # CNN trả về (Batch, Channels, H, W)
+                in_channels = dummy_out.shape[1]
+                
+        self.features.train() 
+        print(f"✅ HOÀN TẤT KHỞI TẠO! Channels: {in_channels} | Pooling: {'Bypass (ViT)' if self.is_pure_vit else self.pooling_type.upper()}")
 
-        # ==========================================
-        # 🧠 POOLING & PROJECTION HEAD
-        # ==========================================
-        if self.pooling_type == 'mpncov':
+        # 3. POOLING & PROJECTION HEAD
+        if self.pooling_type == 'mpncov' and not self.is_pure_vit:
             self.mpncov_bottleneck = nn.Conv2d(in_channels, 256, kernel_size=1, bias=False)
             self.pool = MPNCOV(iterNum=3)
             self.fc_projection = nn.Linear(256 * 256, embedding_size, bias=False)
@@ -156,14 +62,71 @@ class PillRetrievalModel(nn.Module):
         self.th = math.cos(math.pi - m)
         self.mm = math.sin(math.pi - m) * m
 
+    def _build_backbone(self, backbone_type):
+        raw_name = backbone_type.lower()
+        force_tv = raw_name.endswith('_tv')
+        force_timm = raw_name.endswith('_timm')
+        clean_name = raw_name.replace('_tv', '').replace('_timm', '')
+
+        tv_name = clean_name
+        if 'mobilenetv3' in tv_name: tv_name = 'mobilenet_v3_large'
+        elif 'mobilenetv2' in tv_name: tv_name = 'mobilenet_v2'
+        elif 'efficientnetv2' in tv_name: tv_name = tv_name.replace('efficientnetv2', 'efficientnet_v2')
+
+        if force_tv:
+            return self._load_torchvision(tv_name)
+        elif force_timm:
+            return self._load_timm(clean_name)
+
+        if clean_name in ['resnet18', 'resnet34', 'resnet50', 'resnet101']:
+            return self._load_torchvision(clean_name)
+        elif any(x in clean_name for x in ['mobilenet', 'efficientnet']):
+            try: return self._load_torchvision(tv_name)
+            except: return self._load_timm(clean_name)
+        else:
+            try: return self._load_timm(clean_name)
+            except: return self._load_torchvision(clean_name)
+
+    def _load_torchvision(self, name):
+        base_model_func = getattr(models, name)
+        base = base_model_func(weights='DEFAULT')
+        
+        if 'resnet' in name and not any(x in name for x in ['seresnet', 'resnest', 'tresnet']):
+            if name in ['resnet18', 'resnet34']: base.layer4[0].conv1.stride = (1, 1)
+            else: base.layer4[0].conv2.stride = (1, 1)
+            base.layer4[0].downsample[0].stride = (1, 1)
+            return nn.Sequential(*list(base.children())[:-2])
+            
+        if hasattr(base, 'features'):
+            return base.features
+        return nn.Sequential(*list(base.children())[:-2])
+
+    def _load_timm(self, name):
+        drop_path = 0.2 if any(x in name for x in ['large', 'xlarge']) else 0.0
+        
+        # Nếu là ViT thuần túy, KHÔNG DÙNG global_pool='' để TIMM tự lấy token CLS thay cho GeMPooling
+        if self.is_pure_vit:
+            return timm.create_model(name, pretrained=True, num_classes=0, drop_path_rate=drop_path)
+            
+        if any(x in name for x in ['resnet', 'resnest', 'seresnet']) and not any(x in name for x in ['tresnet', 'convnext', 'mobilenet']):
+            return timm.create_model(name, pretrained=True, num_classes=0, global_pool='', output_stride=16, drop_path_rate=drop_path)
+            
+        return timm.create_model(name, pretrained=True, num_classes=0, global_pool='', drop_path_rate=drop_path)
+
     def forward(self, x, labels=None):
         feat = self.features(x)
         
-        if self.pooling_type == 'mpncov':
-            feat = self.mpncov_bottleneck(feat) 
-            pooled_feat = self.pool(feat).view(feat.size(0), -1) 
+        # RẼ NHÁNH XỬ LÝ DỮ LIỆU ĐẦU RA (Xử lý mượt mà cả CNN 4D và ViT 2D)
+        if feat.dim() == 2:
+            # ViT đã tự gộp thành (Batch, Channels), bỏ qua Pooling
+            pooled_feat = feat
         else:
-            pooled_feat = self.pool(feat).view(feat.size(0), -1) 
+            # CNN trả về 4D, đi qua Pooling bình thường
+            if self.pooling_type == 'mpncov' and not self.is_pure_vit:
+                feat = self.mpncov_bottleneck(feat) 
+                pooled_feat = self.pool(feat).view(feat.size(0), -1) 
+            else:
+                pooled_feat = self.pool(feat).view(feat.size(0), -1) 
         
         embedding = self.bn_head(self.fc_projection(pooled_feat))
         norm_embedding = F.normalize(embedding, p=2, dim=1)
