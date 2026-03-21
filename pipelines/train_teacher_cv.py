@@ -38,9 +38,13 @@ def train_one_fold(args, f_idx, num_classes, df_train, df_val, df_ref, device):
         accumulation_steps = 16            # Effective Batch = 128
         lr_backbone, lr_head = 2e-5, 2e-4  # Tăng LR lên một chút vì Batch đã to hơn
     elif any(x in backbone_name for x in large_backbones):
-        n_classes_batch, n_samples = 4, 2  # Physical Batch = 8 ảnh
-        accumulation_steps = 16            # Effective Batch = 128
-        lr_backbone, lr_head = 2e-5, 2e-4
+        # n_classes_batch, n_samples = 4, 2  # Physical Batch = 8 ảnh
+        # accumulation_steps = 16            # Effective Batch = 128
+        # lr_backbone, lr_head = 2e-5, 2e-4
+        # 🚀 ĐÃ BẬT CHECKPOINTING -> NÂNG BATCH TỪ 8 LÊN 16
+        n_classes_batch, n_samples = 8, 2  # Physical Batch = 16 ảnh
+        accumulation_steps = 8             # Effective Batch = 128 (Giữ nguyên)
+        lr_backbone, lr_head = 3e-5, 3e-4  # Tăng LR lên một chút do Batch to ra
     elif any(x in backbone_name for x in medium_backbones):
         n_classes_batch, n_samples = 8, 2  # Physical Batch = 16 ảnh
         accumulation_steps = 8             # Effective Batch = 128
@@ -300,7 +304,7 @@ def main():
 
 
             with open(log_error_file_path, "a") as f:
-                f.write(f"{current_backbone.ljust(25)} | f{e}\n")
+                f.write(f"{current_backbone.ljust(35)} | f{e}\n")
             
             best_map, r1 = 0.0, 0.0
             results_summary[current_backbone] = (best_map, r1)
@@ -312,9 +316,9 @@ def main():
         # Mở file chế độ "a" (append) để ghi nối tiếp vào cuối file
         with open(log_file_path, "a") as f:
             if status == "SUCCESS":
-                f.write(f"{current_backbone.ljust(25)} | {best_map:.4f} | {r1:.4f}\n")
+                f.write(f"{current_backbone.ljust(35)} | {best_map:.4f} | {r1:.4f}\n")
             else:
-                f.write(f"{current_backbone.ljust(25)} | 0.0000 | 0.0000 (ERROR)\n")
+                f.write(f"{current_backbone.ljust(35)} | 0.0000 | 0.0000 (ERROR)\n")
         
         # Dọn dẹp RAM/VRAM sau mỗi model
         gc.collect()
@@ -327,9 +331,9 @@ def main():
     print("\n" + "="*50)
     print("🏆 BÁO CÁO TỔNG KẾT (FOLD 0)")
     print("="*50)
-    print(f"{'Backbone'.ljust(25)} | {'mAP'.ljust(6)} | {'Rank-1'.ljust(6)}")
+    print(f"{'Backbone'.ljust(35)} | {'mAP'.ljust(6)} | {'Rank-1'.ljust(6)}")
     for bb, (mAP, r1) in results_summary.items():
-        print(f"{bb.ljust(25)} | {mAP:.4f} | {r1:.4f} ")
+        print(f"{bb.ljust(35)} | {mAP:.4f} | {r1:.4f} ")
     print("="*50)
     print(f"📁 Toàn bộ kết quả đã được lưu an toàn tại: {log_file_path}")
 

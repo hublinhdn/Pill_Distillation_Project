@@ -3,7 +3,7 @@ super_large_backbones = [
     'convnext_large',
     'swin_large_patch4_window12_384',
     'maxvit_base_tf_384',
-    'efficientnetv2_l'
+    'tf_efficientnetv2_l.in21k_ft_in1k'
 ]
 large_backbones = [
     'convnextv2_base.fcmae_ft_in22k_in1k_384',
@@ -30,13 +30,11 @@ small_backbones = [
     'edgenext_small',
     'mobilevit_s',
     'mobilenetv3_large_100',
-    'mobilenetv3_large_100',
     'efficientnet_b0',
     'convnext_femto',
     'ghostnet_100',
     'convnext_atto',
     'convnextv2_atto',
-    'mobilenetv2_100',
     'mobilenetv2_100',
     'shufflenet_v2_x1_0',
     'squeezenet1_1'

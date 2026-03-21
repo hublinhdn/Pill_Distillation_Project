@@ -8,6 +8,7 @@ import os, sys
 
 sys.path.append(os.path.abspath(os.path.join(os.path.dirname(__file__), '..')))
 from middle.pooling import GeMPooling, MPNCOV
+from models.model_category_config import super_large_backbones, large_backbones, medium_backbones, small_backbones
 
 class PillRetrievalModel(nn.Module):
     def __init__(self, num_classes, backbone_type='resnet50', pooling_type='gem', embedding_size=512, s=64.0, m=0.35):
@@ -107,19 +108,18 @@ class PillRetrievalModel(nn.Module):
         
         # 1. Khởi tạo model từ TIMM
         if self.is_pure_vit:
-            model = timm.create_model(name, pretrained=True, num_classes=0, drop_path_rate=drop_path, dynamic_img_size=True)
+            model = timm.create_model(name, pretrained=True, num_classes=0, global_pool='token', drop_path_rate=drop_path, dynamic_img_size=True)
         elif any(x in name for x in ['resnet', 'resnest', 'seresnet']) and not any(x in name for x in ['tresnet', 'convnext', 'mobilenet']):
             model = timm.create_model(name, pretrained=True, num_classes=0, global_pool='', output_stride=16, drop_path_rate=drop_path)
         else:
             model = timm.create_model(name, pretrained=True, num_classes=0, global_pool='', drop_path_rate=drop_path)
 
         # =========================================================
-        # 🚀 2. BẬT GRADIENT CHECKPOINTING CHO TOÀN BỘ NHÓM SUPER LARGE
+        # 🚀 2. BẬT GRADIENT CHECKPOINTING CHO CẢ SUPER LARGE VÀ LARGE (TIMM)
         # =========================================================
-        super_large_keywords = ['large', 'xlarge', 'maxvit', 'efficientnetv2_l']
-        if any(x in name for x in super_large_keywords):
+        checkpoint_keywords = super_large_backbones + large_backbones
+        if any(x in name for x in checkpoint_keywords):
             try:
-                # Lệnh chuẩn của TIMM để bật Checkpointing
                 model.set_grad_checkpointing(True)
                 print(f"🔥 Đã kích hoạt Gradient Checkpointing cho [{name}]. VRAM đã được nén!")
             except Exception as e:
