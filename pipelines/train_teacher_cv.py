@@ -17,6 +17,7 @@ import traceback
 # Import local modules
 sys.path.append(os.path.abspath(os.path.join(os.path.dirname(__file__), '..')))
 from models.pill_retrieval_model import PillRetrievalModel
+from models.model_category_config import super_large_backbones, large_backbones, medium_backbones, small_backbones
 from utils.dataset_loader import PillDataset, BalancedBatchSampler
 from utils.evaluator import evaluate_retrieval
 from utils.data_utils import load_epill_full_data
@@ -25,30 +26,7 @@ def train_one_fold(args, f_idx, num_classes, df_train, df_val, df_ref, device):
     L_SCE, L_CSCE, L_TRIPLET, L_CONTRASTIVE = 1.0, 0.2, 1.0, 1.0
     USE_SHAPE_LOSS, L_SHAPE = False, 1.0 
     
-    # Đã xóa dòng L_CONTRASTIVE = 0.0 (debug) để mô hình học đầy đủ
-
     backbone_name = args.backbone.lower()
-    
-    # -----------------------------------------------------
-    # 🛡️ 1. CẬP NHẬT LƯỚI LỌC MỚI (Tránh nổ VRAM)
-    # -----------------------------------------------------
-    super_large_backbones = [
-        'efficientnetv2_l', 'convnext_large', 'vit_large', 'swin_large', 'maxvit_base'
-    ]
-    large_backbones = [
-        'resnet101', 'seresnext101_32x4d', 'resnest101e', 'swin_base', 'coatnet',
-        'convnext_base', 'convnextv2_base', 'vit_base', 'tresnet_l'
-    ]
-    medium_backbones = [
-        'densenet161', 'efficientnet_b5', 'nfnet_l0', 'resnet50', 'resnet34'
-    ]
-    # 4. NHÓM SIÊU NHẸ (LIGHTWEIGHT/TINY): < 15M Tham số
-    small_backbones = [
-        'squeezenet1_1', 'resnet18', 'densenet121', 'mobilenetv2_100',
-        'mobilenetv3_large_100', 'shufflenet_v2_x1_0', 'ghostnet_100', 'regnety_004',
-        'efficientnet_b0', 'efficientnet_b1', 'repvgg_a0',
-        'convnext_atto', 'convnextv2_atto', 'convnext_femto', 'mobilevit_s'
-    ]
     
     # PHÂN BỔ TÀI NGUYÊN ĐỘNG
     if any(x in backbone_name for x in super_large_backbones):
@@ -63,10 +41,12 @@ def train_one_fold(args, f_idx, num_classes, df_train, df_val, df_ref, device):
         n_classes_batch, n_samples = 8, 2  # Physical Batch = 16 ảnh
         accumulation_steps = 8             # Effective Batch = 128
         lr_backbone, lr_head = 3e-5, 3e-4
-    else: 
+    elif any(x in backbone_name for x in small_backbones):
         n_classes_batch, n_samples = 16, 2 # Physical Batch = 32 ảnh
         accumulation_steps = 4             # Effective Batch = 128
         lr_backbone, lr_head = 5e-5, 5e-4  
+    else: 
+        raise Exception(f'Please assign {backbone_name} to category (Support large - Lager - Medium - Small) to continue...')
 
     # -----------------------------------------------------
     # 🛡️ 2. TỰ ĐỘNG CHỈNH SIZE CHO DINOv2 / ViT (Chống lỗi Patch)
@@ -284,12 +264,19 @@ def main():
     # ==========================================
     os.makedirs("reports", exist_ok=True)
     log_file_path = f"reports/{pipeline_name}_batch_experiment_{pooling}_summary.txt"
+    log_error_file_path = f"reports/{pipeline_name}_batch_experiment_{pooling}_error.txt"
     
     # Mở file chế độ "w" (write) lần đầu để tạo file mới và ghi tiêu đề
     with open(log_file_path, "w") as f:
         f.write(f"Batch Experiment {pipeline_name} Results for pooling: {pooling}\n")
         f.write("="*50 + "\n")
         f.write(f"{'Backbone'.ljust(25)} | {'mAP'.ljust(6)} | {'Rank-1'.ljust(6)}\n")
+        f.write("-"*50 + "\n")
+    
+    with open(log_error_file_path, "w") as f:
+        f.write(f"Batch Experiment {pipeline_name} Error for pooling: {pooling}\n")
+        f.write("="*50 + "\n")
+        f.write(f"{'Backbone'.ljust(25)} | {'Error reason'.ljust(6)}\n")
         f.write("-"*50 + "\n")
 
     for current_backbone in backbone_list:
@@ -306,6 +293,10 @@ def main():
             print(f"❌ Đã có sự cố khi huấn luyện {current_backbone}")
             print(f"Chi tiết lỗi: {e}") # In chi tiết lỗi ra màn hình
             traceback.print_exc()     # In stack trace để dễ debug
+
+
+            with open(log_error_file_path, "a") as f:
+                f.write(f"{current_backbone.ljust(25)} | f{e}\n")
             
             best_map, r1 = 0.0, 0.0
             results_summary[current_backbone] = (best_map, r1)
