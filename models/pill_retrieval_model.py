@@ -100,18 +100,32 @@ class PillRetrievalModel(nn.Module):
         if hasattr(base, 'features'):
             return base.features
         return nn.Sequential(*list(base.children())[:-2])
-
+    
     def _load_timm(self, name):
-        drop_path = 0.2 if any(x in name for x in ['large', 'xlarge']) else 0.0
+        # Drop path gắt hơn cho mạng siêu lớn
+        drop_path = 0.4 if any(x in name for x in ['large', 'xlarge', 'efficientnetv2_l']) else 0.2
         
-        # Nếu là ViT thuần túy, KHÔNG DÙNG global_pool='' để TIMM tự lấy token CLS thay cho GeMPooling
+        # 1. Khởi tạo model từ TIMM
         if self.is_pure_vit:
-            return timm.create_model(name, pretrained=True, num_classes=0, drop_path_rate=drop_path)
-            
-        if any(x in name for x in ['resnet', 'resnest', 'seresnet']) and not any(x in name for x in ['tresnet', 'convnext', 'mobilenet']):
-            return timm.create_model(name, pretrained=True, num_classes=0, global_pool='', output_stride=16, drop_path_rate=drop_path)
-            
-        return timm.create_model(name, pretrained=True, num_classes=0, global_pool='', drop_path_rate=drop_path)
+            model = timm.create_model(name, pretrained=True, num_classes=0, drop_path_rate=drop_path, dynamic_img_size=True)
+        elif any(x in name for x in ['resnet', 'resnest', 'seresnet']) and not any(x in name for x in ['tresnet', 'convnext', 'mobilenet']):
+            model = timm.create_model(name, pretrained=True, num_classes=0, global_pool='', output_stride=16, drop_path_rate=drop_path)
+        else:
+            model = timm.create_model(name, pretrained=True, num_classes=0, global_pool='', drop_path_rate=drop_path)
+
+        # =========================================================
+        # 🚀 2. BẬT GRADIENT CHECKPOINTING CHO TOÀN BỘ NHÓM SUPER LARGE
+        # =========================================================
+        super_large_keywords = ['large', 'xlarge', 'maxvit', 'efficientnetv2_l']
+        if any(x in name for x in super_large_keywords):
+            try:
+                # Lệnh chuẩn của TIMM để bật Checkpointing
+                model.set_grad_checkpointing(True)
+                print(f"🔥 Đã kích hoạt Gradient Checkpointing cho [{name}]. VRAM đã được nén!")
+            except Exception as e:
+                print(f"⚠️ [{name}] không hỗ trợ Gradient Checkpointing. Lỗi: {e}")
+                
+        return model
 
     def forward(self, x, labels=None):
         feat = self.features(x)

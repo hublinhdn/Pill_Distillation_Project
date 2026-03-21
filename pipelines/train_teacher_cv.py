@@ -30,9 +30,13 @@ def train_one_fold(args, f_idx, num_classes, df_train, df_val, df_ref, device):
     
     # PHÂN BỔ TÀI NGUYÊN ĐỘNG
     if any(x in backbone_name for x in super_large_backbones):
-        n_classes_batch, n_samples = 2, 2  # Physical Batch = 4 ảnh
-        accumulation_steps = 32            # Effective Batch = 128
-        lr_backbone, lr_head = 1e-5, 1e-4  
+        # n_classes_batch, n_samples = 2, 2  # Physical Batch = 4 ảnh
+        # accumulation_steps = 32            # Effective Batch = 128
+        # lr_backbone, lr_head = 1e-5, 1e-4  
+        # 🚀 ĐÃ BẬT CHECKPOINTING -> NÂNG BATCH TỪ 4 LÊN 8
+        n_classes_batch, n_samples = 4, 2  # Physical Batch = 8 ảnh (Thay vì 2, 2 như cũ)
+        accumulation_steps = 16            # Effective Batch = 128
+        lr_backbone, lr_head = 2e-5, 2e-4  # Tăng LR lên một chút vì Batch đã to hơn
     elif any(x in backbone_name for x in large_backbones):
         n_classes_batch, n_samples = 4, 2  # Physical Batch = 8 ảnh
         accumulation_steps = 16            # Effective Batch = 128
