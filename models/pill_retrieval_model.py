@@ -8,7 +8,7 @@ import os, sys
 
 sys.path.append(os.path.abspath(os.path.join(os.path.dirname(__file__), '..')))
 from middle.pooling import GeMPooling, MPNCOV
-from models.model_category_config import super_large_backbones, large_backbones, medium_backbones, small_backbones
+from models.model_category_config import super_large_backbones, large_backbones, medium_backbones, small_backbones, pure_transformer_backbones
 
 class PillRetrievalModel(nn.Module):
     def __init__(self, num_classes, backbone_type='resnet50', pooling_type='gem', embedding_size=512, s=64.0, m=0.35):
@@ -19,7 +19,7 @@ class PillRetrievalModel(nn.Module):
         
         # Xác định xem mạng có phải là Vision Transformer thuần túy hay không
         clean_name = backbone_type.lower().replace('_tv', '').replace('_timm', '')
-        self.is_pure_vit = 'vit' in clean_name and not any(x in clean_name for x in ['maxvit', 'mobilevit'])
+        self.is_pure_vit = any(x in clean_name for x in pure_transformer_backbones)
 
         # 1. KHỞI TẠO BACKBONE
         self.features = self._build_backbone(backbone_type)

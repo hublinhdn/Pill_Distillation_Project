@@ -39,3 +39,10 @@ small_backbones = [
     'shufflenet_v2_x1_0',
     'squeezenet1_1'
 ]
+
+pure_transformer_backbones = [
+    'vit_large_patch14_dinov2.lvd142m',
+    'vit_base_patch14_dinov2.lvd142m',
+    'swin_base_patch4_window12_384',
+    'swin_large_patch4_window12_384'
+]

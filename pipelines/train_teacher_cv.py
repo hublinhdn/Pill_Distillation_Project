@@ -17,7 +17,7 @@ import traceback
 # Import local modules
 sys.path.append(os.path.abspath(os.path.join(os.path.dirname(__file__), '..')))
 from models.pill_retrieval_model import PillRetrievalModel
-from models.model_category_config import super_large_backbones, large_backbones, medium_backbones, small_backbones
+from models.model_category_config import super_large_backbones, large_backbones, medium_backbones, small_backbones, pure_transformer_backbones
 from utils.dataset_loader import PillDataset, BalancedBatchSampler
 from utils.evaluator import evaluate_retrieval
 from utils.data_utils import load_epill_full_data
@@ -27,6 +27,13 @@ def train_one_fold(args, f_idx, num_classes, df_train, df_val, df_ref, device):
     USE_SHAPE_LOSS, L_SHAPE = False, 1.0 
     
     backbone_name = args.backbone.lower()
+    is_pure_vit = any(x in backbone_name for x in pure_transformer_backbones)
+    is_fragile = any(x in backbone_name for x in ['mobilenet', 'ghostnet'])
+    is_massive = any(x in backbone_name for x in ['large', 'xlarge']) and not is_pure_vit
+    if is_pure_vit:
+        L_CSCE, L_TRIPLET, L_CONTRASTIVE = 1.0, 0.0, 0.0 # Tắt cả Contrastive
+    else:
+        L_CSCE, L_TRIPLET, L_CONTRASTIVE = 0.2, 1.0, 1.0
     
     # PHÂN BỔ TÀI NGUYÊN ĐỘNG
     if any(x in backbone_name for x in super_large_backbones):
@@ -143,13 +150,11 @@ def train_one_fold(args, f_idx, num_classes, df_train, df_val, df_ref, device):
     scaler = torch.amp.GradScaler('cuda')
     best_val_map, r1 = 0.0, 0.0
 
+
     for epoch in range(1, TOTAL_EPOCHS + 1):
         # ==========================================
         # 🛡️ HEAD WARM-UP (BẢO VỆ MẠNG YẾU & MẠNG QUÁ TO)
         # ==========================================
-        is_fragile = any(x in backbone_name for x in ['mobilenet', 'ghostnet'])
-        is_massive = any(x in backbone_name for x in ['large', 'xlarge'])
-        
         if is_fragile or is_massive:
             freeze_epochs = 2 if is_fragile else 4 
             if epoch <= freeze_epochs:
@@ -177,9 +182,17 @@ def train_one_fold(args, f_idx, num_classes, df_train, df_val, df_ref, device):
                 logits_sce, logits_csce, norm_embedding_rgb = model(imgs, labels=sub_labels)
                 loss_sce = criterion_sce(logits_sce, sub_labels)
                 loss_csce = criterion_sce(logits_csce, sub_labels)
-                hard_pairs = miner(norm_embedding_rgb, sub_labels)
-                loss_triplet = criterion_triplet(norm_embedding_rgb, sub_labels, hard_pairs)
-                loss_contrastive = criterion_contrastive(norm_embedding_rgb, sub_labels)
+                # hard_pairs = miner(norm_embedding_rgb, sub_labels)
+                # loss_triplet = criterion_triplet(norm_embedding_rgb, sub_labels, hard_pairs)
+                # loss_contrastive = criterion_contrastive(norm_embedding_rgb, sub_labels)
+
+                if L_TRIPLET > 0 or L_CONTRASTIVE > 0:
+                    hard_pairs = miner(norm_embedding_rgb, sub_labels)
+                    loss_triplet = criterion_triplet(norm_embedding_rgb, sub_labels, hard_pairs)
+                    loss_contrastive = criterion_contrastive(norm_embedding_rgb, sub_labels)
+                else:
+                    loss_triplet = torch.tensor(0.0, device=device)
+                    loss_contrastive = torch.tensor(0.0, device=device)
 
                 # ==================================================
                 # 🛡️ SHAPE-CONSISTENCY LOSS (AN TOÀN VRAM Tuyệt Đối)
@@ -198,11 +211,7 @@ def train_one_fold(args, f_idx, num_classes, df_train, df_val, df_ref, device):
 
             if (i + 1) % accumulation_steps == 0 or (i + 1) == len(train_loader):
                 scaler.unscale_(optimizer)
-                
-                # ==================================================
-                # 🛡️ BÓP GRADIENT GẮT HƠN CHO MẠNG MỎNG MANH
-                # ==================================================
-                clip_val = 1.0 if any(x in backbone_name for x in ['mobilenet', 'ghostnet']) else 5.0
+                clip_val = 1.0 if (is_fragile or is_pure_vit) else 5.0
                 torch.nn.utils.clip_grad_norm_(model.parameters(), max_norm=clip_val)
                 
                 scaler.step(optimizer)
