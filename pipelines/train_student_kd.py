@@ -156,7 +156,7 @@ def train_kd_fold(args, f_idx, num_classes, df_train, df_val, df_ref, device):
     scheduler = torch.optim.lr_scheduler.SequentialLR(optimizer, schedulers=[warmup_scheduler, cosine_scheduler], milestones=[WARMUP_EPOCHS])
 
     scaler = torch.amp.GradScaler('cuda')
-    best_val_map = 0.0
+    best_val_map, r1 = 0.0, 0.0
 
     # ==========================================
     # 🚀 5. VÒNG LẶP HUẤN LUYỆN CHƯNG CẤT
@@ -172,7 +172,7 @@ def train_kd_fold(args, f_idx, num_classes, df_train, df_val, df_ref, device):
                     param.requires_grad = True
 
         student.train()
-        pbar = tqdm(train_loader, desc=f"KD Fold {f_idx} | Ep {epoch} | Best {best_val_map:.4f}")
+        pbar = tqdm(train_loader, desc=f"KD Fold {f_idx} | Ep {epoch} | Best {best_val_map:.4f} | R1 {r1:.4f}")
         optimizer.zero_grad()
         
         for i, (imgs, sub_labels, labels, _) in enumerate(pbar):
@@ -236,14 +236,16 @@ def train_kd_fold(args, f_idx, num_classes, df_train, df_val, df_ref, device):
         if (epoch % 5 == 0) or (epoch > TOTAL_EPOCHS - 10):
             val_metrics = evaluate_retrieval(student, val_loader, device, flag_both_side=True)
             val_map = val_metrics['mAP']
-            print(f"📊 Epoch {epoch} mAP: {val_map:.4f}")
+            val_r1 = val_metrics['Rank-1']
+            print(f"📊 Epoch {epoch} mAP: {val_map:.4f} Rank-1: {val_r1}")
             
             if val_map > best_val_map:
                 best_val_map = val_map
+                r1 = val_r1
                 os.makedirs('weights/kd_models', exist_ok=True)
                 torch.save(student.state_dict(), f"weights/kd_models/best_kd_{args.student}_kd_type{args.kd_type}_fold{f_idx}.pth")
                 
-    return best_val_map
+    return best_val_map, r1
 
 def main():
     parser = argparse.ArgumentParser()
@@ -254,6 +256,7 @@ def main():
     parser.add_argument('--kd_type', type=str, default='cosine', choices=['mse', 'cosine', 'kl', 'hybrid'])
     parser.add_argument('--alpha', type=float, default=10.0)
     parser.add_argument('--temperature', type=float, default=4.0)
+    parser.add_argument('--summary_file', type=str, default='KD_Summary.txt')
     
     args = parser.parse_args()
 
@@ -265,6 +268,17 @@ def main():
         device = torch.device('mps')
     else: 
         device = torch.device('cpu')
+
+    os.makedirs('reports_kd', exist_ok=True)
+    report_file = args.summary_file
+    report_file_path = os.path.join('reports_kd', report_file)
+    # Kiểm tra xem tạ có tồn tại không trước khi chạy
+    if not os.path.exists(report_file_path):
+        with open(report_file_path, "w") as f:
+            f.write(f"The first time to run kD ==> create file\n")
+            f.write("="*50 + "\n")
+            f.write(f"{'Teacher'.ljust(35)} --> {'student'.ljust(35)} | {'alpha'.ljust(4)} | {'kd_type'.ljust(6)} | {'mAP'.ljust(6)} | {'Rank-1'.ljust(6)}\n")
+            f.write("-"*50 + "\n")
     
     try:
         df_all = load_epill_full_data()
@@ -279,11 +293,16 @@ def main():
         cond_ref_train = (df_all['is_ref'] == 1) & (df_all['label_idx'].isin(train_labels))
         df_train = df_all[cond_train | cond_ref_train].reset_index(drop=True)
         
-        train_kd_fold(args, fold, total_sub_classes, df_train, df_val, df_ref_gallery, device)
+        map, r1 = train_kd_fold(args, fold, total_sub_classes, df_train, df_val, df_ref_gallery, device)
+
+
+        with open(report_file_path, "a") as f:
+            f.write(f"{args.teacher.ljust(35)} --> {args.student.ljust(35)} | {args.alpha:.4f} | {args.kd_type.ljust(6)} | {map:.4f} | {r1:.4f}\n")
+            
         
     except Exception as e:
         # 🛡️ GHI LẠI TOÀN BỘ LỖI VÀO FILE NẾU BỊ CRASH
-        os.makedirs('reports_kd', exist_ok=True)
+        
         with open('reports_kd/KD_Crash_Traceback.txt', 'a') as f:
             f.write(f"\n{'='*50}\n")
             f.write(f"CRASH LOG: Teacher [{args.teacher}] -> Student [{args.student}]\n")

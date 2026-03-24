@@ -14,6 +14,7 @@ from models.pill_retrieval_model import PillRetrievalModel
 from utils.dataset_ogyei import build_ogyei_df_strict_split, OGYEICropDataset, LetterboxResize
 
 USE_TRAIN_AS_GALLERY = True # use valid (6) or train(28) as gallery for query
+NUM_CLASSES = 9804 # Số class lúc train bằng ePillID (2 side)
 
 def evaluate_model(model, dataloader, device):
     model.eval()
@@ -23,8 +24,8 @@ def evaluate_model(model, dataloader, device):
         for imgs, _, labels, is_ref, _ in tqdm(dataloader, desc="Extracting", leave=False):
             imgs = imgs.to(device)
             with torch.amp.autocast('cuda' if torch.cuda.is_available() else 'cpu'):
-                outputs = model(imgs)
-                feats = outputs[-1] if isinstance(outputs, tuple) else outputs
+                # Model mới trả về thẳng norm_embedding khi không có labels
+                feats = model(imgs) 
             all_feats.append(feats.cpu())
             all_labels.append(labels.cpu())
             all_is_ref.append(is_ref.cpu())
@@ -37,8 +38,8 @@ def evaluate_model(model, dataloader, device):
     q_feats, q_labels = all_feats[all_is_ref == 0], all_labels[all_is_ref == 0]
 
     S = torch.mm(q_feats, g_feats.T)
-    
     ranks = []
+
     for i in range(len(q_feats)):
         match_idx = (g_labels[torch.argsort(S[i], descending=True)] == q_labels[i]).nonzero(as_tuple=True)[0]
         ranks.append(match_idx[0].item() + 1 if len(match_idx) > 0 else float('inf'))
@@ -57,16 +58,16 @@ def generate_report(results, output_dir, output_img_path='performance_comparison
 
     # --- Vẽ biểu đồ ---
     fig, (ax1, ax2) = plt.subplots(1, 2, figsize=(14, 6))
-    colors = ['#ff9999', '#66b3ff', '#99ff99']
-    
-    bars1 = ax1.bar(names, maps, color=colors, edgecolor='black')
+    colors = ['#ff9999', '#66b3ff', '#99ff99', '#ffcc99', '#c2c2f0'] # Thêm màu dự phòng nếu test nhiều model
+    bars1 = ax1.bar(names, maps, color=colors[:len(names)], edgecolor='black')
     ax1.set_title('mAP Score Comparison', fontweight='bold')
+    
     for bar in bars1: ax1.text(bar.get_x() + bar.get_width()/2., bar.get_height() + 0.01, f'{bar.get_height():.4f}', ha='center', va='bottom', fontweight='bold')
-
-    bars2 = ax2.bar(names, rank1s, color=colors, edgecolor='black')
+    
+    bars2 = ax2.bar(names, rank1s, color=colors[:len(names)], edgecolor='black')
     ax2.set_title('Rank-1 Accuracy (%)', fontweight='bold')
     for bar in bars2: ax2.text(bar.get_x() + bar.get_width()/2., bar.get_height() + 1.0, f'{bar.get_height():.2f}%', ha='center', va='bottom', fontweight='bold')
-
+   
     plt.tight_layout()
     plt.savefig(os.path.join(output_dir, output_img_path), dpi=300)
 
@@ -78,23 +79,21 @@ def generate_report(results, output_dir, output_img_path='performance_comparison
             f.write(f"{r['name']:<25} | {r['rank1']*100:>10.2f} % | {r['mAP']:>8.4f}\n")
 
 def do_cross_check(gallery_split = 'train'):
-# DEVICE = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
     if torch.cuda.is_available():
         DEVICE = torch.device('cuda')
-        device_type = 'cuda'
-    elif torch.backends.mps.is_available(): # Dành cho MacBook chip M1/M2/M3
+    elif torch.backends.mps.is_available(): 
         DEVICE = torch.device('mps')
-        device_type = 'mps'
-    else: # Dành cho MacBook chip Intel
+    else: 
         DEVICE = torch.device('cpu')
-        device_type = 'cpu'
+
     OGYEI_ROOT = os.path.join('data/raw/OGYEIv2/ogyeiv2', 'ogyeiv2') 
     OUTPUT_DIR = os.path.join(os.getcwd(), 'reports', 'ogyei_eval')
 
+    # BẠN CẬP NHẬT TÊN VÀ ĐƯỜNG DẪN Ở ĐÂY SAU NHÉ
     MODELS_CONFIG = [
-        {"name": "Student Baseline", "backbone": "resnet18", "path": "weights/best_resnet18_gem_fold0.pth"},
-        {"name": "Teacher Model", "backbone": "convnext_base", "path": "weights/best_teacher_convnext_base_fold0.pth"},
-        {"name": "Student KD (Ours)", "backbone": "resnet18", "path": "weights/best_kd_resnet18_kd_typecosine_alpha10.0_fold0.pth"}
+        {"name": "Student Baseline", "backbone": "resnet18", "path": "weights/phase2/best_resnet18_gem_fold0.pth"},
+        {"name": "Teacher Model", "backbone": "convnext_base", "path": "weights/phase2/best_convnext_base_gem_fold0.pth"},
+        {"name": "Student KD (Ours)", "backbone": "resnet18", "path": "weights/kd_models/best_kd_resnet18_kd_typecosine_fold0.pth"}
     ]
 
     transform = transforms.Compose([
@@ -109,7 +108,7 @@ def do_cross_check(gallery_split = 'train'):
     results = []
     for cfg in MODELS_CONFIG:
         print(f"\n🚀 Đang chạy: {cfg['name']}...")
-        model = PillRetrievalModel(num_classes=9804, backbone_type=cfg['backbone'], pooling_type='gem').to(DEVICE)
+        model = PillRetrievalModel(num_classes=NUM_CLASSES, backbone_type=cfg['backbone'], pooling_type='gem').to(DEVICE)
         model.load_state_dict(torch.load(cfg['path'], map_location=DEVICE, weights_only=True))
         r1, mAP = evaluate_model(model, loader, DEVICE)
         results.append({'name': cfg['name'], 'rank1': r1, 'mAP': mAP})
@@ -121,6 +120,7 @@ def do_cross_check(gallery_split = 'train'):
         output_img_path=f'split_{gallery_split}_performance_comparison.png'
         output_txt_report=f'split_{gallery_split}_evaluation_report.txt'
         generate_report(results, OUTPUT_DIR, output_img_path=output_img_path, output_txt_report=output_txt_report)
+
 if __name__ == "__main__":
     # gallery_split = 'train' if USE_TRAIN_AS_GALLERY else 'valid' 
     do_cross_check('train')
