@@ -243,7 +243,7 @@ def train_kd_fold(args, f_idx, num_classes, df_train, df_val, df_ref, device):
                 best_val_map = val_map
                 r1 = val_r1
                 os.makedirs('weights/kd_models', exist_ok=True)
-                torch.save(student.state_dict(), f"weights/kd_models/best_kd_{args.student}_kd_type{args.kd_type}_fold{f_idx}.pth")
+                torch.save(student.state_dict(), f"weights/kd_models/best_{teacher_name}_kd_{student_name}_kd_type{args.kd_type}_fold{f_idx}.pth")
                 
     return best_val_map, r1
 
