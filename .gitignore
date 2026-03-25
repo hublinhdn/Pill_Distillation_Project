@@ -43,6 +43,9 @@ experiments/
 reports/*.*
 reports/
 
+results/
+results/*.*
+
 # --- System / OS ---
 # Đặc biệt quan trọng khi bạn dùng MacBook
 .DS_Store

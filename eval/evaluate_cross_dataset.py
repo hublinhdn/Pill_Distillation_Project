@@ -15,6 +15,16 @@ from utils.dataset_ogyei import build_ogyei_df_strict_split, OGYEICropDataset, L
 
 USE_TRAIN_AS_GALLERY = True # use valid (6) or train(28) as gallery for query
 NUM_CLASSES = 9804 # Số class lúc train bằng ePillID (2 side)
+# BẠN CẬP NHẬT TÊN VÀ ĐƯỜNG DẪN Ở ĐÂY SAU NHÉ
+MODELS_CONFIG = [
+    {"name": "Resnet18 Baseline", "backbone": "resnet18_tv", "path": "weights/phase2/best_resnet18_tv_gem_fold0.pth"},
+    {"name": "resnest101e Teacher", "backbone": "resnest101e_timm", "path": "weights/phase2/best_resnest101e_timm_gem_fold0.pth"},
+    {"name": "Student KD - Resnet18 Được ResNeSt101e dạy", "backbone": "resnet18_tv", "path": "weights/kd_models/best_resnest101e_timm_kd_resnet18_tv_kd_typecosine_fold0.pth"},
+
+    {"name": "Eff_b2 Baseline", "backbone": "efficientnet_b2_timm", "path": "weights/phase2/best_efficientnet_b2_timm_gem_fold0.pth"},
+    {"name": "Eff_b5 Teacher", "backbone": "efficientnet_b5_timm", "path": "weights/phase2/best_efficientnet_b5_timm_gem_fold0.pth"},
+    {"name": "Student KD - Eff_b2 Được Eff_b5 dạy", "backbone": "efficientnet_b2_timm", "path": "weights/kd_models/best_efficientnet_b5_timm_kd_efficientnet_b2_timm_kd_typecosine_fold0.pth"}
+]
 
 def evaluate_model(model, dataloader, device):
     model.eval()
@@ -88,13 +98,6 @@ def do_cross_check(gallery_split = 'train'):
 
     OGYEI_ROOT = os.path.join('data/raw/OGYEIv2/ogyeiv2', 'ogyeiv2') 
     OUTPUT_DIR = os.path.join(os.getcwd(), 'reports', 'ogyei_eval')
-
-    # BẠN CẬP NHẬT TÊN VÀ ĐƯỜNG DẪN Ở ĐÂY SAU NHÉ
-    MODELS_CONFIG = [
-        {"name": "Student Baseline", "backbone": "resnet18", "path": "weights/phase2/best_resnet18_gem_fold0.pth"},
-        {"name": "Teacher Model", "backbone": "convnext_base", "path": "weights/phase2/best_convnext_base_gem_fold0.pth"},
-        {"name": "Student KD (Ours)", "backbone": "resnet18", "path": "weights/kd_models/best_kd_resnet18_kd_typecosine_fold0.pth"}
-    ]
 
     transform = transforms.Compose([
         LetterboxResize(384),
