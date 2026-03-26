@@ -42,6 +42,8 @@ experiments/
 # --- Reports ---
 reports/*.*
 reports/
+reports_kd/*.*
+reports_kd/
 
 results/
 results/*.*

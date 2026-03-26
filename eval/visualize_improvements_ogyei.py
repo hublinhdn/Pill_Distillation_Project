@@ -1,3 +1,5 @@
+# Use to draw what is improve from baseline to KD
+
 import os
 import sys
 import random
@@ -23,7 +25,7 @@ OGYEI_ROOT = os.path.join('data/raw/OGYEIv2/ogyeiv2', 'ogyeiv2')
 OUTPUT_DIR = os.path.join(os.getcwd(), 'reports', 'error_analysis')
 
 # Cấu hình 2 mô hình cần so sánh
-NAME = 'resnet18'
+NAME = 'Resnet18'
 BACKBONE = 'resnet18_tv'
 BASELINE_WEIGHT = "weights/phase2/best_resnet18_tv_gem_fold0.pth"
 KD_WEIGHT = "weights/kd_models/best_resnest101e_timm_kd_resnet18_tv_kd_typecosine_fold0.pth"
@@ -141,11 +143,11 @@ def main():
     # 🎨 VẼ BIỂU ĐỒ 3 CỘT (QUERY | BASELINE | KD)
     # ==========================================
     random.seed(42)
-    num_plots = min(6, len(improvements)) # Vẽ 6 ca là đẹp nhất cho 1 trang A4
+    num_plots = min(4, len(improvements)) # Vẽ 4 ca là đẹp nhất cho 1 trang A4
     selected_cases = random.sample(improvements, num_plots)
 
-    fig, axes = plt.subplots(num_plots, 3, figsize=(15, 4 * num_plots))
-    fig.suptitle(f"Knowledge Distillation Improvements on OGYEIv2 ({NAME})", fontsize=20, fontweight='bold', y=0.98, color='darkgreen')
+    fig, axes = plt.subplots(num_plots, 3, figsize=(9, 3 * num_plots))
+    # fig.suptitle(f"{NAME} with Knowledge Distillation Improvements on OGYEIv2", fontsize=18, fontweight='bold', y=0.98, color='darkgreen')
 
     # Đảm bảo axes luôn là mảng 2 chiều
     if num_plots == 1: axes = axes.reshape(1, -1)
@@ -164,13 +166,13 @@ def main():
         # [Cột 1]: Ảnh Query (Thực tế)
         ax_q = axes[i, 0]
         ax_q.imshow(img_q)
-        ax_q.set_title(f"[1] QUERY (OGYEIv2)\nClass: {case['lbl_q']}\nFile: {name_q[:15]}...", fontweight='bold')
+        ax_q.set_title(f"[1] QUERY (OGYEIv2)\nClass: {case['lbl_q']}", fontweight='bold')
         ax_q.axis('off')
 
         # [Cột 2]: Ảnh Baseline đoán sai
         ax_base = axes[i, 1]
         ax_base.imshow(img_base)
-        ax_base.set_title(f"[2] STUDENT BASELINE (Sai)\nClass: {case['lbl_g_base']} | Sim: {case['sim_base']:.2f}\nFile: {name_base[:15]}...", color='red', fontweight='bold')
+        ax_base.set_title(f"[2] {NAME} BASELINE (False)\nClass: {case['lbl_g_base']} | Sim: {case['sim_base']:.2f}.", color='red', fontweight='bold')
         for spine in ax_base.spines.values():
             spine.set_edgecolor('red')
             spine.set_linewidth(4)
@@ -179,14 +181,14 @@ def main():
         # [Cột 3]: Ảnh KD đoán đúng
         ax_kd = axes[i, 2]
         ax_kd.imshow(img_kd)
-        ax_kd.set_title(f"[3] STUDENT KD (Đúng)\nClass: {case['lbl_g_kd']} | Sim: {case['sim_kd']:.2f}\nFile: {name_kd[:15]}...", color='green', fontweight='bold')
+        ax_kd.set_title(f"[3] {NAME} KD (True)\nClass: {case['lbl_g_kd']} | Sim: {case['sim_kd']:.2f}", color='green', fontweight='bold')
         for spine in ax_kd.spines.values():
             spine.set_edgecolor('green')
             spine.set_linewidth(6) # Viền dày hơn để nhấn mạnh chiến thắng
         ax_kd.set_xticks([]); ax_kd.set_yticks([])
 
     plt.tight_layout(rect=[0, 0, 1, 0.95])
-    out_img_path = os.path.join(OUTPUT_DIR, f'kd_improvements_{BACKBONE}_ogyei.png')
+    out_img_path = os.path.join(OUTPUT_DIR, f'kd_improvements_{BACKBONE}_ogyei.jpg')
     plt.savefig(out_img_path, dpi=300, bbox_inches='tight')
     plt.close()
     
