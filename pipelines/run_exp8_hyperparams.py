@@ -6,7 +6,7 @@ import datetime
 # ==========================================
 # ⚙️ CẤU HÌNH THỰC NGHIỆM 8: LOSS & POOLING ABLATION
 # ==========================================
-BACKBONE = "resnet18_tv"
+BACKBONE = "resnet101"
 EPOCHS = 60  # Chạy 30 epoch là đủ đánh giá xu hướng
 
 # 6 Cấu hình chiến lược để giải phẫu hoàn toàn kiến trúc
@@ -30,8 +30,6 @@ CONFIGS = [
     {"name": "Config G (Alternative Pool)",    "w_sce": 1.0, "w_csce": 0.2, "w_triplet": 1.0, "w_cont": 1.0, "pooling": "mpncov"},
 ]
 
-TEMP_LOG_FILE = "CV_Summary.txt"
-
 def main():
     print("="*80)
     print("🚀 BẮT ĐẦU THỰC NGHIỆM 8: SENSITIVITY ANALYSIS (LOSS & POOLING)")
@@ -39,6 +37,7 @@ def main():
 
     results = []
     os.makedirs("reports_kd", exist_ok=True)
+    os.makedirs("reports", exist_ok=True)
 
     for cfg in CONFIGS:
         cfg_name = cfg["name"]
@@ -48,9 +47,10 @@ def main():
         
         print(f"\n[⏳] ĐANG HUẤN LUYỆN: {cfg_name}")
         print(f"     ArcFace: {w_sce} | Aux CE: {w_csce} | Triplet: {w_triplet} | Contrastive: {w_cont} | Pooling: {pooling.upper()}")
+        target_log_file = f"reports/baseline_batch_experiment_{pooling}_summary.txt"
         
-        if os.path.exists(TEMP_LOG_FILE):
-            os.remove(TEMP_LOG_FILE)
+        if os.path.exists(target_log_file):
+            os.remove(target_log_file)
 
         cmd = [
             "python", "pipelines/train_teacher_cv.py",
@@ -76,7 +76,7 @@ def main():
             continue
 
         try:
-            with open(TEMP_LOG_FILE, "r") as f:
+            with open(target_log_file, "r") as f:
                 lines = f.readlines()
                 last_line = lines[-1].strip()
                 
