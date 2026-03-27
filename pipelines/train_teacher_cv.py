@@ -23,8 +23,16 @@ from utils.evaluator import evaluate_retrieval
 from utils.data_utils import load_epill_full_data
 
 def train_one_fold(args, f_idx, num_classes, df_train, df_val, df_ref, device):
-    L_SCE, L_CSCE, L_TRIPLET, L_CONTRASTIVE = 1.0, 0.2, 1.0, 1.0
+    # L_SCE, L_CSCE, L_TRIPLET, L_CONTRASTIVE = 1.0, 0.2, 1.0, 1.0
     USE_SHAPE_LOSS, L_SHAPE = False, 1.0 
+
+    L_SCE = args.w_sce
+    L_CSCE = args.w_csce
+    L_TRIPLET = args.w_triplet
+    L_CONTRASTIVE = args.w_cont
+
+    TOTAL_EPOCHS = args.epochs 
+    WARMUP_EPOCHS = 5
     
     backbone_name = args.backbone.lower()
     is_pure_vit = any(x in backbone_name for x in pure_transformer_backbones)
@@ -134,9 +142,6 @@ def train_one_fold(args, f_idx, num_classes, df_train, df_val, df_ref, device):
         {'params': head_params, 'lr': lr_head}
     ], weight_decay=wd_value)
     
-    TOTAL_EPOCHS = 60 
-    WARMUP_EPOCHS = 5
-    
     warmup_scheduler = torch.optim.lr_scheduler.LinearLR(
         optimizer, start_factor=0.01, total_iters=WARMUP_EPOCHS
     )
@@ -243,6 +248,13 @@ def main():
     parser.add_argument('--backbone', type=str, default='convnext_base,resnet50,mobilenet_v3_large')
     parser.add_argument('--pooling', type=str, default='gem', choices=['gem', 'mpncov'])
     parser.add_argument('--pipeline_name', type=str, default='baseline')
+
+    parser.add_argument('--epochs', type=int, default=60)
+    parser.add_argument('--w_sce', type=float, default=1.0)
+    parser.add_argument('--w_csce', type=float, default=0.2)
+    parser.add_argument('--w_triplet', type=float, default=1.0)
+    parser.add_argument('--w_cont', type=float, default=1.0)
+
     args = parser.parse_args()
 
     os.environ["PYTORCH_CUDA_ALLOC_CONF"] = "expandable_segments:True"
