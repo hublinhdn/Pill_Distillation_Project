@@ -10,6 +10,11 @@ from torch.utils.data import DataLoader
 from torchvision import transforms
 from tqdm import tqdm
 from pytorch_metric_learning import losses, miners
+# ==========================================
+# 🔒 CHÈN ĐOẠN NÀY ĐỂ CỐ ĐỊNH RANDOM SEED
+# ==========================================
+import random
+import numpy as np
 
 sys.path.append(os.path.abspath(os.path.join(os.path.dirname(__file__), '..')))
 from models.pill_retrieval_model import PillRetrievalModel
@@ -257,8 +262,21 @@ def main():
     parser.add_argument('--alpha', type=float, default=10.0)
     parser.add_argument('--temperature', type=float, default=4.0)
     parser.add_argument('--summary_file', type=str, default='KD_Summary.txt')
+    parser.add_argument('--seed', type=int, default=42)
     
     args = parser.parse_args()
+
+    print(f"🌱 Setting random seed to: {args.seed}")
+    random.seed(args.seed)
+    np.random.seed(args.seed)
+    torch.manual_seed(args.seed)
+    if torch.cuda.is_available():
+        torch.cuda.manual_seed(args.seed)
+        torch.cuda.manual_seed_all(args.seed)  # Nếu dùng multi-GPU
+        # Đảm bảo các phép toán của cuDNN chạy ổn định và giống hệt nhau ở mỗi lần
+        torch.backends.cudnn.deterministic = True
+        torch.backends.cudnn.benchmark = False
+    # ==========================================
 
     os.environ["PYTORCH_CUDA_ALLOC_CONF"] = "expandable_segments:True"
     
