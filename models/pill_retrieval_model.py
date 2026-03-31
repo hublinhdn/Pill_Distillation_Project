@@ -51,7 +51,17 @@ class PillRetrievalModel(nn.Module):
             self.fc_projection = nn.Linear(256 * 256, embedding_size, bias=False)
         else:
             self.pool = GeMPooling(p=3.0)
-            self.fc_projection = nn.Linear(in_channels, embedding_size, bias=False)
+            # 🚀 Thêm Bottleneck 2 lớp cho các mạng có số kênh lớn
+            if in_channels >= 1024:
+                print(f"🌟 Kích hoạt Bottleneck Projection cho mạng khổng lồ: {in_channels} -> 1024 -> {embedding_size}")
+                self.fc_projection = nn.Sequential(
+                    nn.Linear(in_channels, 1024, bias=False),
+                    nn.GELU(),
+                    nn.Dropout(p=0.2), # Chống Overfitting cho các mạng lớn
+                    nn.Linear(1024, embedding_size, bias=False)
+                )
+            else:
+                self.fc_projection = nn.Linear(in_channels, embedding_size, bias=False)
 
         self.bn_head = nn.BatchNorm1d(embedding_size)
         self.fc_ce = nn.Linear(embedding_size, num_classes, bias=False)
@@ -108,7 +118,7 @@ class PillRetrievalModel(nn.Module):
         
         # 1. Khởi tạo model từ TIMM
         if self.is_pure_vit:
-            model = timm.create_model(name, pretrained=True, num_classes=0, global_pool='token', drop_path_rate=drop_path, dynamic_img_size=True)
+            model = timm.create_model(name, pretrained=True, num_classes=0, global_pool='avg', drop_path_rate=drop_path, dynamic_img_size=True)
         elif any(x in name for x in ['resnet', 'resnest', 'seresnet']) and not any(x in name for x in ['tresnet', 'convnext', 'mobilenet']):
             model = timm.create_model(name, pretrained=True, num_classes=0, global_pool='', output_stride=16, drop_path_rate=drop_path)
         else:

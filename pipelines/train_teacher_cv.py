@@ -70,6 +70,10 @@ def train_one_fold(args, f_idx, num_classes, df_train, df_val, df_ref, device):
         lr_backbone, lr_head = 5e-5, 5e-4  
     else: 
         raise Exception(f'Please assign {backbone_name} to category (Support large - Lager - Medium - Small) to continue...')
+    
+    if is_pure_vit:
+        lr_backbone = lr_backbone * 0.3  # Ép LR backbone xuống (ví dụ 2e-5 -> 6e-6)
+        print(f"📉 Đã tự động giảm LR Backbone cho Pure Transformer xuống: {lr_backbone}")
 
     # -----------------------------------------------------
     # 🛡️ 2. TỰ ĐỘNG CHỈNH SIZE CHO DINOv2 / ViT (Chống lỗi Patch)
