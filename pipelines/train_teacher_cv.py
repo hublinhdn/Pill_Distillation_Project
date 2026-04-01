@@ -17,7 +17,7 @@ import traceback
 # Import local modules
 sys.path.append(os.path.abspath(os.path.join(os.path.dirname(__file__), '..')))
 from models.pill_retrieval_model import PillRetrievalModel
-from models.model_category_config import super_large_backbones, large_backbones, medium_backbones, small_backbones, pure_transformer_backbones
+from models.model_category_config import super_large_backbones, large_backbones, medium_backbones, small_backbones, vit_backbones, swin_backbones
 from utils.dataset_loader import PillDataset, BalancedBatchSampler
 from utils.evaluator import evaluate_retrieval
 from utils.data_utils import load_epill_full_data
@@ -35,13 +35,16 @@ def train_one_fold(args, f_idx, num_classes, df_train, df_val, df_ref, device):
     WARMUP_EPOCHS = 5
     
     backbone_name = args.backbone.lower()
-    is_pure_vit = any(x in backbone_name for x in pure_transformer_backbones)
-    is_fragile = any(x in backbone_name for x in ['mobilenet', 'ghostnet'])
-    is_massive = any(x in backbone_name for x in ['large', 'xlarge']) and not is_pure_vit
+    is_swin_backbone = any(x in backbone_name for x in swin_backbones)
+    is_vit_backbone = any(x in backbone_name for x in vit_backbones)
+    is_pure_vit = is_swin_backbone or is_vit_backbone
+    is_fragile = any(x in backbone_name for x in small_backbones)
+    is_massive = any(x in backbone_name for x in super_large_backbones)
+
+    # is_fragile = any(x in backbone_name for x in ['mobilenet', 'ghostnet'])
+    # is_massive = any(x in backbone_name for x in ['large', 'xlarge']) and not is_pure_vit
     if is_pure_vit:
-        L_CSCE, L_TRIPLET, L_CONTRASTIVE = 1.0, 0.0, 0.0 # Tắt cả Contrastive
-    else:
-        L_CSCE, L_TRIPLET, L_CONTRASTIVE = 0.2, 1.0, 1.0
+        L_CSCE, L_TRIPLET, L_CONTRASTIVE = 0.0, 0.0, 0.0 # Tắt cả Contrastive
     
     # PHÂN BỔ TÀI NGUYÊN ĐỘNG
     if any(x in backbone_name for x in super_large_backbones):
@@ -228,7 +231,13 @@ def train_one_fold(args, f_idx, num_classes, df_train, df_val, df_ref, device):
                 optimizer.zero_grad()
 
             total_loss += loss.item() * accumulation_steps
-            pbar.set_postfix({'L': f"{loss.item()*accumulation_steps:.4f}", 'mAp': f"{best_val_map:.4f}", 'R1':f"{r1:.4f}"})
+            current_avg_loss = total_loss / (i + 1)
+
+            pbar.set_postfix({
+                'Avg_L': f"{current_avg_loss:.4f}", 
+                'mAp': f"{best_val_map:.4f}", 
+                'R1': f"{r1:.4f}"
+            })
 
         scheduler.step()
 

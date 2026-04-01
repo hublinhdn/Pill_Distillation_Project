@@ -18,7 +18,7 @@ import numpy as np
 
 sys.path.append(os.path.abspath(os.path.join(os.path.dirname(__file__), '..')))
 from models.pill_retrieval_model import PillRetrievalModel
-from models.model_category_config import super_large_backbones, large_backbones, medium_backbones, small_backbones, pure_transformer_backbones
+from models.model_category_config import super_large_backbones, large_backbones, medium_backbones, small_backbones, vit_backbones, swin_backbones
 from utils.dataset_loader import PillDataset, BalancedBatchSampler
 from utils.evaluator import evaluate_retrieval
 from utils.data_utils import load_epill_full_data
@@ -33,7 +33,11 @@ def train_kd_fold(args, f_idx, num_classes, df_train, df_val, df_ref, device):
     student_name = args.student.lower()
     teacher_name = args.teacher.lower()
     
-    is_pure_vit = any(x in student_name for x in pure_transformer_backbones)
+    # is_pure_vit = any(x in student_name for x in pure_transformer_backbones)
+    is_swin_backbone = any(x in student_name for x in swin_backbones)
+    is_vit_backbone = any(x in student_name for x in vit_backbones)
+    is_pure_vit = is_swin_backbone or is_vit_backbone
+
     is_fragile = any(x in student_name for x in ['mobilenet', 'ghostnet', 'shufflenet', 'squeezenet'])
     is_massive = any(x in student_name for x in ['large', 'xlarge']) and not is_pure_vit
     

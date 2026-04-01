@@ -8,7 +8,7 @@ import os, sys
 
 sys.path.append(os.path.abspath(os.path.join(os.path.dirname(__file__), '..')))
 from middle.pooling import GeMPooling, MPNCOV
-from models.model_category_config import super_large_backbones, large_backbones, medium_backbones, small_backbones, pure_transformer_backbones
+from models.model_category_config import super_large_backbones, large_backbones, medium_backbones, small_backbones, vit_backbones, swin_backbones
 
 class PillRetrievalModel(nn.Module):
     def __init__(self, num_classes, backbone_type='resnet50', pooling_type='gem', embedding_size=512, s=64.0, m=0.35):
@@ -19,7 +19,9 @@ class PillRetrievalModel(nn.Module):
         
         # Xác định xem mạng có phải là Vision Transformer thuần túy hay không
         clean_name = backbone_type.lower().replace('_tv', '').replace('_timm', '')
-        self.is_pure_vit = any(x in clean_name for x in pure_transformer_backbones)
+        self.is_vit_backbone = any(x in clean_name for x in vit_backbones)
+        self.is_swin_backbone = any(x in clean_name for x in swin_backbones)
+        self.is_pure_vit = self.is_vit_backbone or self.is_swin_backbone
 
         # 1. KHỞI TẠO BACKBONE
         self.features = self._build_backbone(backbone_type)
@@ -117,8 +119,10 @@ class PillRetrievalModel(nn.Module):
         drop_path = 0.4 if any(x in name for x in ['large', 'xlarge', 'efficientnetv2_l']) else 0.2
         
         # 1. Khởi tạo model từ TIMM
-        if self.is_pure_vit:
+        if self.is_swin_backbone:
             model = timm.create_model(name, pretrained=True, num_classes=0, global_pool='avg', drop_path_rate=drop_path, dynamic_img_size=True)
+        elif self.is_vit_backbone:
+            model = timm.create_model(name, pretrained=True, num_classes=0, global_pool='token', drop_path_rate=drop_path, dynamic_img_size=True)
         elif any(x in name for x in ['resnet', 'resnest', 'seresnet']) and not any(x in name for x in ['tresnet', 'convnext', 'mobilenet']):
             model = timm.create_model(name, pretrained=True, num_classes=0, global_pool='', output_stride=16, drop_path_rate=drop_path)
         else:
