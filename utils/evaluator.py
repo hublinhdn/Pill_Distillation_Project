@@ -3,11 +3,13 @@ import torch.nn.functional as F
 import numpy as np
 from tqdm import tqdm
 
-def evaluate_retrieval(model, dataloader, device, flag_both_side=True):
+def evaluate_retrieval(model, dataloader, device, flag_both_side=True, flag_eval_delta=False):
     model.eval()
     all_feats, all_labels, all_sub_labels, all_is_ref = [], [], [], []
 
-    # 1. Trích xuất đặc trưng
+    # =====================================================================
+    # 1. TRÍCH XUẤT ĐẶC TRƯNG (1-Pass Optimization)
+    # =====================================================================
     with torch.no_grad():
         for imgs, sub_labels, labels, is_ref in tqdm(dataloader, desc="Extracting Features", leave=False):
             imgs = imgs.to(device)
@@ -22,114 +24,153 @@ def evaluate_retrieval(model, dataloader, device, flag_both_side=True):
     all_sub_labels = torch.cat(all_sub_labels, dim=0)
     all_is_ref = torch.cat(all_is_ref, dim=0)
 
-    # 2. Phân tách Query (is_ref=0) và Gallery (is_ref=1)
+    # =====================================================================
+    # 2. PHÂN TÁCH DỮ LIỆU (Gallery và Consumer Query)
+    # =====================================================================
+    # Gallery (Từ điển chuẩn - Chứa toàn bộ Reference)
     g_mask = all_is_ref == 1
-    q_mask = all_is_ref == 0
-
     g_feats, g_labels, g_sub_labels = all_feats[g_mask], all_labels[g_mask], all_sub_labels[g_mask]
-    q_feats, q_labels, q_sub_labels = all_feats[q_mask], all_labels[q_mask], all_sub_labels[q_mask]
+    
+    # Consumer Query (Ảnh người dùng chụp ở điều kiện thực tế)
+    q_cons_mask = all_is_ref == 0
+    q_cons_feats, q_cons_labels, q_cons_sub_labels = all_feats[q_cons_mask], all_labels[q_cons_mask], all_sub_labels[q_cons_mask]
 
-    unique_classes = torch.unique(g_labels)
-    n_classes = len(unique_classes)
-    
     # =====================================================================
-    # 3. SET-TO-SET MAX-POOLING (Giải quyết triệt để Gallery có nhiều ảnh)
+    # 3. HÀM HELPER: LÕI TÍNH TOÁN ĐIỂM SỐ
     # =====================================================================
-    # S có kích thước (N_queries, N_gallery) - Tính điểm 1 lần cho mọi tổ hợp
-    S = torch.mm(q_feats, g_feats.T)
-    
-    # Ma trận lưu điểm MAX của Query tới Mặt A và Mặt B của từng Class
-    sim_A = torch.zeros((len(q_feats), n_classes))
-    sim_B = torch.zeros((len(q_feats), n_classes))
-    
-    class_list = []
-    
-    for c_idx, lbl in enumerate(unique_classes):
-        lbl = lbl.item()
-        class_list.append(lbl)
+    def _calculate_metrics(q_f, q_l, q_sl, g_f, g_l, g_sl, self_query_indices=None):
+        unique_classes = torch.unique(g_l)
+        n_classes = len(unique_classes)
         
-        mask_c = (g_labels == lbl)
-        mask_front = mask_c & (g_sub_labels % 2 == 0)
-        mask_back = mask_c & (g_sub_labels % 2 != 0)
+        # S có kích thước (N_queries, N_gallery) - Tính Cosine Similarity một lần
+        S = torch.mm(q_f, g_f.T)
         
-        # Lấy điểm cao nhất của Query so với TẤT CẢ các ảnh Mặt A trong Gallery
-        if mask_front.any():
-            sim_A[:, c_idx] = S[:, mask_front].max(dim=1).values
-        else:
-            sim_A[:, c_idx] = -1.0 
+        # ⚠️ ANTI-LEAKAGE: Chống gian lận khi dùng Reference truy vấn chính nó
+        if self_query_indices is not None:
+            # Ép điểm tương đồng của chính bức ảnh đó về -1.0
+            S[torch.arange(len(q_f)), self_query_indices] = -1.0
             
-        # Lấy điểm cao nhất của Query so với TẤT CẢ các ảnh Mặt B trong Gallery
-        if mask_back.any():
-            sim_B[:, c_idx] = S[:, mask_back].max(dim=1).values
-        else:
-            sim_B[:, c_idx] = -1.0
-
-    class_tensor = torch.tensor(class_list)
-    ranks = []
-
-    # =====================================================================
-    # 4. CHẤM ĐIỂM
-    # =====================================================================
-    if not flag_both_side:
-        # --- A. SINGLE SIDE ---
-        sim_scores = torch.max(sim_A, sim_B) # Lấy mặt nào giống nhất làm điểm
-        for i in range(len(q_feats)):
-            q_lbl = q_labels[i].item()
-            scores = sim_scores[i]
-            sorted_indices = torch.argsort(scores, descending=True)
-            sorted_classes = class_tensor[sorted_indices]
-            rank = (sorted_classes == q_lbl).nonzero(as_tuple=True)[0].item() + 1
-            ranks.append(rank)
-            
-    else:
-        # --- B. BOTH SIDES LATE FUSION (CỘNG ĐỒNG THỜI - CROSS MAX) ---
-        unique_q_labels = torch.unique(q_labels)
+        sim_A = torch.zeros((len(q_f), n_classes))
+        sim_B = torch.zeros((len(q_f), n_classes))
+        class_list = []
         
-        for lbl in unique_q_labels:
+        # Max-Pooling điểm số theo từng lớp (gom mặt A và mặt B)
+        for c_idx, lbl in enumerate(unique_classes):
             lbl = lbl.item()
-            mask_lbl = (q_labels == lbl)
+            class_list.append(lbl)
             
-            q_indices = mask_lbl.nonzero(as_tuple=True)[0]
-            q_subs = q_sub_labels[q_indices]
+            mask_c = (g_l == lbl)
+            mask_front = mask_c & (g_sl % 2 == 0)
+            mask_back = mask_c & (g_sl % 2 != 0)
             
-            front_idx = q_indices[q_subs % 2 == 0]
-            back_idx = q_indices[q_subs % 2 != 0]
-            
-            n_pairs = min(len(front_idx), len(back_idx))
-            
-            # Chấm điểm cho các cặp ảnh (Pairs)
-            for i in range(n_pairs):
-                idx1 = front_idx[i]
-                idx2 = back_idx[i]
+            if mask_front.any():
+                sim_A[:, c_idx] = S[:, mask_front].max(dim=1).values
+            else:
+                sim_A[:, c_idx] = -1.0 
                 
-                # CÔNG THỨC CHUẨN MỰC: Phép CỘNG (SUM) để 2 mặt gánh nhau
-                # Tổ hợp 1: Q1 khớp Mặt A, Q2 khớp Mặt B
-                fuse_1 = sim_A[idx1] + sim_B[idx2] 
-                # Tổ hợp 2: Q1 khớp Mặt B, Q2 khớp Mặt A
-                fuse_2 = sim_B[idx1] + sim_A[idx2] 
-                
-                # Lấy kịch bản xoay chiều tốt nhất
-                sim_scores = torch.max(fuse_1, fuse_2)
-                
-                sorted_indices = torch.argsort(sim_scores, descending=True)
-                sorted_classes = class_tensor[sorted_indices]
-                rank = (sorted_classes == lbl).nonzero(as_tuple=True)[0].item() + 1
-                ranks.append(rank)
-                
-            # Chấm điểm cho các ảnh lẻ (Leftovers) - Đánh giá như Single Side
-            leftover_idx = torch.cat([front_idx[n_pairs:], back_idx[n_pairs:]])
-            for idx in leftover_idx:
-                sim_scores = torch.max(sim_A[idx], sim_B[idx])
-                sorted_indices = torch.argsort(sim_scores, descending=True)
-                sorted_classes = class_tensor[sorted_indices]
-                rank = (sorted_classes == lbl).nonzero(as_tuple=True)[0].item() + 1
-                ranks.append(rank)
+            if mask_back.any():
+                sim_B[:, c_idx] = S[:, mask_back].max(dim=1).values
+            else:
+                sim_B[:, c_idx] = -1.0
 
-    ranks = np.array(ranks)
-    rank1 = (ranks == 1).mean()
-    mAP = (1.0 / ranks).mean()
+        class_tensor = torch.tensor(class_list)
+        ranks = []
 
-    return {
-        'Rank-1': rank1,
-        'mAP': mAP
+        # Bắt đầu xếp hạng (Ranking)
+        if not flag_both_side:
+            # --- A. SINGLE SIDE ---
+            sim_scores = torch.max(sim_A, sim_B) 
+            for i in range(len(q_f)):
+                q_lbl = q_l[i].item()
+                scores = sim_scores[i]
+                sorted_indices = torch.argsort(scores, descending=True)
+                sorted_classes = class_tensor[sorted_indices]
+                rank = (sorted_classes == q_lbl).nonzero(as_tuple=True)[0].item() + 1
+                ranks.append(rank)
+        else:
+            # --- B. BOTH SIDES LATE FUSION (CROSS MAX) ---
+            unique_q_labels = torch.unique(q_l)
+            for lbl in unique_q_labels:
+                lbl = lbl.item()
+                mask_lbl = (q_l == lbl)
+                
+                q_indices = mask_lbl.nonzero(as_tuple=True)[0]
+                q_subs = q_sl[q_indices]
+                
+                front_idx = q_indices[q_subs % 2 == 0]
+                back_idx = q_indices[q_subs % 2 != 0]
+                n_pairs = min(len(front_idx), len(back_idx))
+                
+                # Chấm điểm cho các cặp ảnh (Pairs)
+                for i in range(n_pairs):
+                    idx1 = front_idx[i]
+                    idx2 = back_idx[i]
+                    
+                    fuse_1 = sim_A[idx1] + sim_B[idx2] 
+                    fuse_2 = sim_B[idx1] + sim_A[idx2] 
+                    sim_scores = torch.max(fuse_1, fuse_2)
+                    
+                    sorted_indices = torch.argsort(sim_scores, descending=True)
+                    sorted_classes = class_tensor[sorted_indices]
+                    rank = (sorted_classes == lbl).nonzero(as_tuple=True)[0].item() + 1
+                    ranks.append(rank)
+                    
+                # Chấm điểm cho các ảnh lẻ (Leftovers)
+                leftover_idx = torch.cat([front_idx[n_pairs:], back_idx[n_pairs:]])
+                for idx in leftover_idx:
+                    sim_scores = torch.max(sim_A[idx], sim_B[idx])
+                    sorted_indices = torch.argsort(sim_scores, descending=True)
+                    sorted_classes = class_tensor[sorted_indices]
+                    rank = (sorted_classes == lbl).nonzero(as_tuple=True)[0].item() + 1
+                    ranks.append(rank)
+
+        ranks = np.array(ranks)
+        rank1 = (ranks == 1).mean()
+        mAP = (1.0 / ranks).mean()
+        
+        return rank1, mAP
+
+    # =====================================================================
+    # 4. THỰC THI ĐÁNH GIÁ
+    # =====================================================================
+    # 4.1. Đánh giá cốt lõi: mAP của Consumer (Mặc định)
+    rank1_cons, map_cons = _calculate_metrics(
+        q_cons_feats, q_cons_labels, q_cons_sub_labels, 
+        g_feats, g_labels, g_sub_labels, 
+        self_query_indices=None
+    )
+    
+    results = {
+        'Rank-1': rank1_cons,
+        'mAP': map_cons
     }
+
+    # 4.2. Kịch bản đánh giá mở rộng: Tính Delta mAP
+    if flag_eval_delta:
+        # Lấy danh sách các nhãn thuốc thực sự thuộc Validation Fold (từ tập Consumer)
+        val_classes = torch.unique(q_cons_labels)
+        
+        # Tạo mask lọc các ảnh Reference trong Gallery có nhãn thuộc Validation Fold
+        val_ref_mask = torch.isin(g_labels, val_classes)
+        
+        # Rút trích tập Query Reference đảm bảo chuẩn Zero-shot
+        q_ref_feats = g_feats[val_ref_mask]
+        q_ref_labels = g_labels[val_ref_mask]
+        q_ref_sub_labels = g_sub_labels[val_ref_mask]
+        
+        # Lấy vị trí index nguyên bản của chúng trong g_feats để vô hiệu hóa Self-similarity
+        val_ref_indices = torch.nonzero(val_ref_mask).squeeze(1)
+        
+        # Đánh giá nội bộ miền Reference
+        rank1_ref, map_ref = _calculate_metrics(
+            q_ref_feats, q_ref_labels, q_ref_sub_labels, 
+            g_feats, g_labels, g_sub_labels, 
+            self_query_indices=val_ref_indices
+        )
+        
+        results['mAP(Cons)'] = map_cons
+        results['mAP(Ref)'] = map_ref
+        results['mAP(Delta)'] = abs(map_ref - map_cons)
+        results['Rank-1(Ref)'] = rank1_ref
+
+    return results

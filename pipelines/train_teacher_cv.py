@@ -21,6 +21,7 @@ from models.model_category_config import super_large_backbones, large_backbones,
 from utils.dataset_loader import PillDataset, BalancedBatchSampler
 from utils.evaluator import evaluate_retrieval
 from utils.data_utils import load_epill_full_data
+folder_weight = 'weights/phase3'
 
 def train_one_fold(args, f_idx, num_classes, df_train, df_val, df_ref, device):
     # L_SCE, L_CSCE, L_TRIPLET, L_CONTRASTIVE = 1.0, 0.2, 1.0, 1.0
@@ -161,6 +162,14 @@ def train_one_fold(args, f_idx, num_classes, df_train, df_val, df_ref, device):
 
     scaler = torch.amp.GradScaler('cuda')
     best_val_map, r1 = 0.0, 0.0
+    best_metrics = {
+        'Rank-1': 0.0,
+        'mAP': 0.0,
+        'mAP(Cons)': 0.0,
+        'mAP(Ref)': 0.0,
+        'mAP(Delta)': 0.0,
+        'Rank-1(Ref)': 0.0
+    }
 
 
     for epoch in range(1, TOTAL_EPOCHS + 1):
@@ -242,19 +251,19 @@ def train_one_fold(args, f_idx, num_classes, df_train, df_val, df_ref, device):
         scheduler.step()
 
         if (epoch % 5 == 0) or (epoch > TOTAL_EPOCHS - 10):
-            val_metrics = evaluate_retrieval(model, val_loader, device, flag_both_side=True)
+            val_metrics = evaluate_retrieval(model, val_loader, device, flag_both_side=True, flag_eval_delta=True)
             val_map = val_metrics['mAP']
             val_r1 = val_metrics['Rank-1']
-            print(f"📊 Epoch {epoch} mAP: {val_map:.4f} (Rank-1: {val_r1:.4f})")
+            print(f"📊 Epoch {epoch} mAP: {val_map:.4f} | (Rank-1: {val_r1:.4f}) | Extra: {val_metrics}")
             
             if val_map > best_val_map:
                 best_val_map = val_map
                 r1 = val_r1
-                folder_weight = 'weights/phase2'
+                best_metrics = val_metrics
                 os.makedirs(folder_weight, exist_ok=True)
-                torch.save(model.state_dict(), f"{folder_weight}/best_{args.backbone}_{args.pooling}_fold{f_idx}.pth")
+                torch.save(model.state_dict(), f"{folder_weight}/best_{args.backbone}_{args.pooling}_fold{f_idx}_{args.w_sce}_{args.w_csce}_{args.w_triplet}_{args.w_cont}.pth")
                 
-    return best_val_map, r1
+    return best_val_map, r1, best_metrics
 
 def main():
     parser = argparse.ArgumentParser()
@@ -274,13 +283,10 @@ def main():
     
     if torch.cuda.is_available():
         device = torch.device('cuda')
-        device_type = 'cuda'
     elif torch.backends.mps.is_available(): 
         device = torch.device('mps')
-        device_type = 'mps'
     else: 
         device = torch.device('cpu')
-        device_type = 'cpu'
     
     df_all = load_epill_full_data()
     total_sub_classes = df_all['sub_label_idx'].nunique()
@@ -296,6 +302,12 @@ def main():
     
     backbone_list = [b.strip() for b in args.backbone.split(',')]
     print(f"🚀 BẮT ĐẦU CHIẾN DỊCH VỚI: {backbone_list}")
+
+    L_SCE = args.w_sce
+    L_CSCE = args.w_csce
+    L_TRIPLET = args.w_triplet
+    L_CONTRASTIVE = args.w_cont
+    TOTAL_EPOCHS = args.epochs 
     
     results_summary = {}
     pooling = args.pooling
@@ -312,13 +324,13 @@ def main():
     with open(log_file_path, "w") as f:
         f.write(f"Batch Experiment {pipeline_name} Results for pooling: {pooling}\n")
         f.write("="*50 + "\n")
-        f.write(f"{'Backbone'.ljust(25)} | {'mAP'.ljust(6)} | {'Rank-1'.ljust(6)}\n")
+        f.write(f"{'Backbone'.ljust(35)} | {'mAP'.ljust(6)} | {'Rank-1'.ljust(6)} | {'SCE'.ljust(6)} | {'CSCE'.ljust(6)} | {'TRIP'.ljust(6)} | {'CONT'.ljust(6)} | EXTRA INFO\n")
         f.write("-"*50 + "\n")
     
     with open(log_error_file_path, "w") as f:
         f.write(f"Batch Experiment {pipeline_name} Error for pooling: {pooling}\n")
         f.write("="*50 + "\n")
-        f.write(f"{'Backbone'.ljust(25)} | {'Error reason'.ljust(6)}\n")
+        f.write(f"{'Backbone'.ljust(35)} | {'Error reason'.ljust(6)}\n")
         f.write("-"*50 + "\n")
 
     for current_backbone in backbone_list:
@@ -328,8 +340,12 @@ def main():
         
         args.backbone = current_backbone
         try:
-            best_map, r1 = train_one_fold(args, fold, total_sub_classes, df_train, df_val, df_ref_gallery, device)
-            results_summary[current_backbone] = (best_map, r1)
+            best_map, r1, best_metrics = train_one_fold(args, fold, total_sub_classes, df_train, df_val, df_ref_gallery, device)
+            mApCons = best_metrics.get('mAP(Cons)') or 0.0
+            mApRef = best_metrics.get('mAP(Ref)') or 0.0
+            mApDelta = best_metrics.get('mAP(Delta)') or 0.0
+            r1Ref = best_metrics.get('Rank-1(Ref)') or 0.0
+            results_summary[current_backbone] = (best_map, r1, best_metrics)
             status = "SUCCESS"
         except Exception as e:
             print(f"❌ Đã có sự cố khi huấn luyện {current_backbone}")
@@ -340,8 +356,8 @@ def main():
             with open(log_error_file_path, "a") as f:
                 f.write(f"{current_backbone.ljust(35)} | f{e}\n")
             
-            best_map, r1 = 0.0, 0.0
-            results_summary[current_backbone] = (best_map, r1)
+            best_map, r1, mApCons, mApRef, mApDelta, r1Ref  = 0.0, 0.0, 0.0,0.0, 0.0, 0.0
+            results_summary[current_backbone] = (best_map, r1, {})
             status = "FAILED"
         
         # ==========================================
@@ -350,25 +366,31 @@ def main():
         # Mở file chế độ "a" (append) để ghi nối tiếp vào cuối file
         with open(log_file_path, "a") as f:
             if status == "SUCCESS":
-                f.write(f"{current_backbone.ljust(35)} | {best_map:.4f} | {r1:.4f}\n")
+                f.write(f"{current_backbone.ljust(35)} | {best_map:.4f} | {r1:.4f} | {L_SCE} | {L_CSCE} | {L_TRIPLET} | {L_CONTRASTIVE} | mAP(Cons):{mApCons:.4f} - mAP(Ref):{mApRef:.4f} - mAP(Delta):{mApDelta:.4f} - Rank-1(Ref):{r1Ref:.4f}\n")
             else:
-                f.write(f"{current_backbone.ljust(35)} | 0.0000 | 0.0000 (ERROR)\n")
+                f.write(f"{current_backbone.ljust(35)} | 0.0000 | 0.0000 (ERROR) | {L_SCE} | {L_CSCE} | {L_TRIPLET} | {L_CONTRASTIVE} | mAP(Cons):{mApCons:.4f} - mAP(Ref):{mApRef:.4f} - mAP(Delta):{mApDelta:.4f} - Rank-1(Ref):{r1Ref:.4f}\n")
         
         # Dọn dẹp RAM/VRAM sau mỗi model
         gc.collect()
         if torch.cuda.is_available():
             torch.cuda.empty_cache()
 
+    
+
     # ==========================================
     # 🏆 IN BẢNG TỔNG KẾT RA MÀN HÌNH SAU CÙNG
     # ==========================================
     print("\n" + "="*50)
     print("🏆 BÁO CÁO TỔNG KẾT (FOLD 0)")
-    print("="*50)
-    print(f"{'Backbone'.ljust(35)} | {'mAP'.ljust(6)} | {'Rank-1'.ljust(6)}")
-    for bb, (mAP, r1) in results_summary.items():
-        print(f"{bb.ljust(35)} | {mAP:.4f} | {r1:.4f} ")
-    print("="*50)
+    print("="*70)
+    print(f"{'Backbone'.ljust(35)} | {'mAP'.ljust(6)} | {'Rank-1'.ljust(6)} | {'SCE'.ljust(6)} | {'CSCE'.ljust(6)} | {'TRIP'.ljust(6)} | {'CONT'.ljust(6)} | Extra info")
+    for bb, (mAP, r1, best_metrics) in results_summary.items():
+        mApCons = best_metrics.get('mAP(Cons)') or 0.0
+        mApRef = best_metrics.get('mAP(Ref)') or 0.0
+        mApDelta = best_metrics.get('mAP(Delta)') or 0.0
+        r1Ref = best_metrics.get('Rank-1(Ref)') or 0.0
+        print(f"{bb.ljust(35)} | {mAP:.4f} | {r1:.4f} | {L_SCE} | {L_CSCE} | {L_TRIPLET} | {L_CONTRASTIVE} | mAP(Cons):{mApCons:.4f} - mAP(Ref):{mApRef:.4f} - mAP(Delta):{mApDelta:.4f} - Rank-1(Ref):{r1Ref:.4f}")
+    print("="*70)
     print(f"📁 Toàn bộ kết quả đã được lưu an toàn tại: {log_file_path}")
 
 if __name__ == '__main__':
