@@ -1,14 +1,8 @@
-"""
-tmux new -s recalcaulte -d "bash -lc '
-python pipelines_selections_teacher/recalculate_metrics.py \
-|& tee -a logs/recalcaulte_15_models_$(date +%F_%H%M%S).log
-'"
-
-"""
 import os
 import sys
 import torch
 import pandas as pd
+import gc  # 🛡️ BỨC TƯỜNG SỐ 1: Thêm thư viện dọn rác hệ thống
 from torch.utils.data import DataLoader
 from torchvision import transforms
 
@@ -38,6 +32,9 @@ def main():
         'resnet101_tv', 'tf_efficientnetv2_l.in21k_ft_in1k', 'maxvit_base_tf_384_timm'
     ]
 
+    students = []
+    teachers = ['maxvit_base_tf_384_timm']
+
     all_backbones = teachers + students
 
     # 1. Chuẩn bị dữ liệu Validation dùng chung
@@ -55,10 +52,11 @@ def main():
         transforms.Normalize(mean=[0.485, 0.456, 0.406], std=[0.229, 0.224, 0.225]),
     ])
 
-    # Gộp Consumer Query và Reference Gallery vào chung 1 loader (1-pass inference)
+    # 🛡️ BỨC TƯỜNG SỐ 3: HẠ BATCH SIZE XUỐNG 16
     val_loader = DataLoader(
         PillDataset(pd.concat([df_val, df_ref_gallery]).reset_index(drop=True), transform=val_transform), 
-        batch_size=64, shuffle=False, num_workers=4, pin_memory=True
+        batch_size=16, 
+        shuffle=False, num_workers=4, pin_memory=True
     )
 
     # Khởi tạo danh sách lưu kết quả
@@ -79,8 +77,9 @@ def main():
             model = PillRetrievalModel(num_classes=total_sub_classes, backbone_type=backbone, pooling_type='gem').to(device)
             model.load_state_dict(torch.load(weight_path, map_location=device))
             
-            # Chạy Evaluator với cờ đánh giá Delta
-            metrics = evaluate_retrieval(model, val_loader, device, flag_both_side=True, flag_eval_delta=True)
+            # 🛡️ BỨC TƯỜNG SỐ 2: BỌC HÀM EVALUATOR BẰNG AUTOCAST
+            with torch.amp.autocast('cuda'):
+                metrics = evaluate_retrieval(model, val_loader, device, flag_both_side=True, flag_eval_delta=True)
             
             # Trích xuất dữ liệu
             recalc_results.append({
@@ -93,11 +92,18 @@ def main():
             
             print(f"   => mAP(Cons): {metrics.get('mAP'):.4f} | mAP(Ref): {metrics.get('mAP(Ref)'):.4f} | Delta: {metrics.get('mAP(Delta)'):.4f}")
             
+            # 🛡️ BỨC TƯỜNG SỐ 1: ÉP DỌN RÁC TRIỆT ĐỂ Ở MỨC HỆ ĐIỀU HÀNH VÀ GPU
             del model
+            gc.collect()
             torch.cuda.empty_cache()
 
         except Exception as e:
             print(f"❌ Lỗi khi đánh giá {backbone}: {e}")
+            # Dọn rác cả khi gặp lỗi để cứu các mạng phía sau
+            if 'model' in locals():
+                del model
+            gc.collect()
+            torch.cuda.empty_cache()
 
     # ==========================================
     # LƯU VÀ IN BÁO CÁO TỔNG KẾT

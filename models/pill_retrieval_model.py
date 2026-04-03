@@ -125,6 +125,12 @@ class PillRetrievalModel(nn.Module):
             model = timm.create_model(name, pretrained=True, num_classes=0, global_pool='token', drop_path_rate=drop_path, dynamic_img_size=True)
         elif any(x in name for x in ['resnet', 'resnest', 'seresnet']) and not any(x in name for x in ['tresnet', 'convnext', 'mobilenet']):
             model = timm.create_model(name, pretrained=True, num_classes=0, global_pool='', output_stride=16, drop_path_rate=drop_path)
+        # =========================================================
+        # 🛠️ VÁ LỖI Ở ĐÂY: Loại bỏ drop_path_rate cho các mạng cũ/nhẹ
+        # =========================================================
+        elif any(x in name for x in ['ghostnet', 'mobilenet']):
+            model = timm.create_model(name, pretrained=True, num_classes=0, global_pool='')
+        # =========================================================
         else:
             model = timm.create_model(name, pretrained=True, num_classes=0, global_pool='', drop_path_rate=drop_path)
 
