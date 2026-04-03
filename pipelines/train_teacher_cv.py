@@ -319,19 +319,21 @@ def main():
     os.makedirs("reports", exist_ok=True)
     log_file_path = f"reports/{pipeline_name}_batch_experiment_{pooling}_summary.txt"
     log_error_file_path = f"reports/{pipeline_name}_batch_experiment_{pooling}_error.txt"
+
+    # CHỈ tạo mới và ghi Header nếu file CHƯA CÓ.
+    if not os.path.exists(log_file_path):
+        with open(log_file_path, "w") as f:
+            f.write(f"Batch Experiment {pipeline_name} Results for pooling: {pooling}\n")
+            f.write("="*50 + "\n")
+            f.write(f"{'Backbone'.ljust(35)} | {'mAP'.ljust(6)} | {'Rank-1'.ljust(6)} | {'SCE'.ljust(6)} | {'CSCE'.ljust(6)} | {'TRIP'.ljust(6)} | {'CONT'.ljust(6)} | EXTRA INFO\n")
+            f.write("-"*50 + "\n")
     
-    # Mở file chế độ "w" (write) lần đầu để tạo file mới và ghi tiêu đề
-    with open(log_file_path, "w") as f:
-        f.write(f"Batch Experiment {pipeline_name} Results for pooling: {pooling}\n")
-        f.write("="*50 + "\n")
-        f.write(f"{'Backbone'.ljust(35)} | {'mAP'.ljust(6)} | {'Rank-1'.ljust(6)} | {'SCE'.ljust(6)} | {'CSCE'.ljust(6)} | {'TRIP'.ljust(6)} | {'CONT'.ljust(6)} | EXTRA INFO\n")
-        f.write("-"*50 + "\n")
-    
-    with open(log_error_file_path, "w") as f:
-        f.write(f"Batch Experiment {pipeline_name} Error for pooling: {pooling}\n")
-        f.write("="*50 + "\n")
-        f.write(f"{'Backbone'.ljust(35)} | {'Error reason'.ljust(6)}\n")
-        f.write("-"*50 + "\n")
+    if not os.path.exists(log_error_file_path):
+        with open(log_error_file_path, "w") as f:
+            f.write(f"Batch Experiment {pipeline_name} Error for pooling: {pooling}\n")
+            f.write("="*50 + "\n")
+            f.write(f"{'Backbone'.ljust(35)} | {'Error reason'.ljust(6)}\n")
+            f.write("-"*50 + "\n")
 
     for current_backbone in backbone_list:
         print(f"\n{'='*60}")

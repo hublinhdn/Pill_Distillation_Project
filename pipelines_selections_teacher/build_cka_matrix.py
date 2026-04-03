@@ -23,6 +23,10 @@ def center_gram(gram):
     return H @ gram @ H
 
 def linear_cka(features_x, features_y):
+    # Ép kiểu về float32 để tránh lỗi NaN/Overflow khi nhân ma trận ở chế độ FP16
+    features_x = features_x.float()
+    features_y = features_y.float()
+    
     gram_x = features_x @ features_x.T
     gram_y = features_y @ features_y.T
     
@@ -35,7 +39,7 @@ def linear_cka(features_x, features_y):
     
     return (scaled_hsic / (norm_x * norm_y)).item()
 
-# Hàm tạo tên file trọng số chính xác theo train_teacher_cv.py
+# Hàm tạo tên file trọng số chính xác
 def get_weight_path(backbone, pooling='gem', fold=0, w_sce=1.0, w_csce=0.2, w_triplet=1.0, w_cont=1.0):
     folder_weight = 'weights/phase3'
     return f"{folder_weight}/best_{backbone}_{pooling}_fold{fold}_{w_sce}_{w_csce}_{w_triplet}_{w_cont}.pth"
@@ -48,7 +52,6 @@ def main():
     device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
     print(f"🖥️ Đang chạy trên thiết bị: {device}")
 
-    # Danh sách cấu hình (Đảm bảo giống hệt lúc train baseline)
     students = ['resnet18_tv', 'mobilenetv3_large_100_tv', 'ghostnet_100_timm', 'efficientnet_b1_timm']
     teachers = [
         'efficientnet_b5_timm', 'convnextv2_base.fcmae_ft_in22k_in1k_384_timm',
@@ -57,27 +60,24 @@ def main():
         'resnet101_tv', 'tf_efficientnetv2_l.in21k_ft_in1k', 'maxvit_base_tf_384_timm'
     ]
 
-    # Load dữ liệu để lấy total_sub_classes
     print("⏳ Đang chuẩn bị dữ liệu Validation...")
     df_all = load_epill_full_data()
     total_sub_classes = df_all['sub_label_idx'].nunique()
     
-    # Chỉ lấy tập Query Consumer của Fold 0 làm tập tính CKA
     df_val = df_all[(df_all['fold'] == 0) & (df_all['is_ref'] == 0)].reset_index(drop=True)
 
     val_transform = transforms.Compose([
-        transforms.Resize((384, 384)), # Dùng chung 384 vì đã gạch bỏ ViT Patch14
+        transforms.Resize((384, 384)), 
         transforms.ToTensor(),
         transforms.Normalize(mean=[0.485, 0.456, 0.406], std=[0.229, 0.224, 0.225]),
     ])
 
-    # Shuffle=True để lấy một lượng ảnh ngẫu nhiên đa dạng tính CKA
+    # 🛡️ HẠ BATCH SIZE XUỐNG 16 ĐỂ TRÁNH OOM KHI LOAD 2 MODEL
     val_loader = DataLoader(
         PillDataset(df_val, transform=val_transform),
-        batch_size=64, shuffle=True, num_workers=4, pin_memory=True
+        batch_size=16, shuffle=True, num_workers=4, pin_memory=True
     )
 
-    # Khởi tạo ma trận rỗng
     cka_results = pd.DataFrame(index=students, columns=teachers)
 
     print(f"🚀 BẮT ĐẦU TÍNH MA TRẬN CKA (4 Students x 11 Teachers)")
@@ -87,7 +87,7 @@ def main():
         student_weight = get_weight_path(s_name)
         
         if not os.path.exists(student_weight):
-            print(f"   ❌ Không tìm thấy trọng số: {student_weight} -> BỎ QUA!")
+            print(f"   ❌ Không tìm thấy: {student_weight} -> BỎ QUA!")
             continue
 
         student = PillRetrievalModel(num_classes=total_sub_classes, backbone_type=s_name, pooling_type='gem').to(device)
@@ -111,21 +111,26 @@ def main():
             num_batches = 0
             
             with torch.no_grad():
-                # Lấy 10 batch (~640 ảnh) là đủ độ tin cậy thống kê cho ma trận Gram
-                for i, (imgs, _, _, _) in enumerate(val_loader):
-                    if i >= 10: break 
-                    imgs = imgs.to(device)
-                    
-                    # Model trả về norm_embedding khi không có labels truyền vào
-                    s_embed = student(imgs) 
-                    t_embed = teacher(imgs)
-                    
-                    total_cka += linear_cka(t_embed, s_embed)
-                    num_batches += 1
-                    
-            avg_cka = total_cka / num_batches
-            cka_results.loc[s_name, t_name] = round(avg_cka, 4)
-            print(f"      => CKA Score: {avg_cka:.4f}")
+                # 🛡️ BẬT AUTOCAST (MIXED PRECISION)
+                with torch.amp.autocast('cuda'):
+                    # Chạy 40 batch size 16 (tương đương 640 ảnh)
+                    for i, (imgs, _, _, _) in enumerate(val_loader):
+                        if i >= 40: break 
+                        imgs = imgs.to(device)
+                        
+                        s_embed = student(imgs) 
+                        t_embed = teacher(imgs)
+                        
+                        total_cka += linear_cka(t_embed, s_embed)
+                        num_batches += 1
+                        
+                        # 🛡️ ÉP GIẢI PHÓNG TENSOR CỤC BỘ NGAY LẬP TỨC
+                        del imgs, s_embed, t_embed
+
+            if num_batches > 0:
+                avg_cka = total_cka / num_batches
+                cka_results.loc[s_name, t_name] = round(avg_cka, 4)
+                print(f"      => CKA Score: {avg_cka:.4f}")
             
             del teacher
             torch.cuda.empty_cache()
@@ -133,7 +138,6 @@ def main():
         del student
         torch.cuda.empty_cache()
 
-    # Xuất báo cáo
     os.makedirs("reports", exist_ok=True)
     csv_path = "reports/CKA_Similarity_Matrix.csv"
     cka_results.to_csv(csv_path)

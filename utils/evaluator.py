@@ -165,7 +165,7 @@ def evaluate_retrieval(model, dataloader, device, flag_both_side=True, flag_eval
         rank1_ref, map_ref = _calculate_metrics(
             q_ref_feats, q_ref_labels, q_ref_sub_labels, 
             g_feats, g_labels, g_sub_labels, 
-            self_query_indices=val_ref_indices
+            self_query_indices=None #val_ref_indices
         )
         
         results['mAP(Cons)'] = map_cons

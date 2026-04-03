@@ -27,13 +27,15 @@ def train_kd_fold(args, f_idx, num_classes, df_train, df_val, df_ref, device):
     # ==========================================
     # ⚙️ 1. CẤU HÌNH THÔNG SỐ ĐỘNG
     # ==========================================
-    L_SCE, L_CSCE, L_TRIPLET, L_CONTRASTIVE = 1.0, 0.2, 1.0, 1.0
+    L_SCE = args.w_sce
+    L_CSCE = args.w_csce
+    L_TRIPLET = args.w_triplet
+    L_CONTRASTIVE = args.w_cont
     ALPHA_KD = args.alpha 
     
     student_name = args.student.lower()
     teacher_name = args.teacher.lower()
     
-    # is_pure_vit = any(x in student_name for x in pure_transformer_backbones)
     is_swin_backbone = any(x in student_name for x in swin_backbones)
     is_vit_backbone = any(x in student_name for x in vit_backbones)
     is_pure_vit = is_swin_backbone or is_vit_backbone
@@ -42,30 +44,24 @@ def train_kd_fold(args, f_idx, num_classes, df_train, df_val, df_ref, device):
     is_massive = any(x in student_name for x in ['large', 'xlarge']) and not is_pure_vit
     
     if is_pure_vit:
-        L_CSCE, L_TRIPLET, L_CONTRASTIVE = 1.0, 0.0, 0.0 
+        L_CSCE, L_TRIPLET, L_CONTRASTIVE = 0.0, 0.0, 0.0 
     
+    # 🛡️ PHÂN BỔ TÀI NGUYÊN THEO MẠNG TEACHER (Vì Teacher ăn nhiều VRAM nhất)
     if any(x in teacher_name for x in super_large_backbones):
-        n_classes_batch, n_samples = 4, 2  # Physical Batch = 8 ảnh (Thay vì 2, 2 như cũ)
-        accumulation_steps = 16            # Effective Batch = 128
-        lr_backbone, lr_head = 2e-5, 2e-4  # Tăng LR lên một chút vì Batch đã to hơn
+        n_classes_batch, n_samples = 4, 2  
+        accumulation_steps = 16            
     elif any(x in teacher_name for x in large_backbones):
-        n_classes_batch, n_samples = 8, 2  # Physical Batch = 16 ảnh
-        accumulation_steps = 8             # Effective Batch = 128 (Giữ nguyên)
-        lr_backbone, lr_head = 3e-5, 3e-4  # Tăng LR lên một chút do Batch to ra
+        n_classes_batch, n_samples = 8, 2  
+        accumulation_steps = 8             
     elif any(x in teacher_name for x in medium_backbones):
-        n_classes_batch, n_samples = 8, 2  # Physical Batch = 16 ảnh
-        accumulation_steps = 8             # Effective Batch = 128
-        lr_backbone, lr_head = 3e-5, 3e-4
+        n_classes_batch, n_samples = 8, 2  
+        accumulation_steps = 8             
     elif any(x in teacher_name for x in small_backbones):
-        n_classes_batch, n_samples = 16, 2 # Physical Batch = 32 ảnh
-        accumulation_steps = 4             # Effective Batch = 128
-        lr_backbone, lr_head = 5e-5, 5e-4  
+        n_classes_batch, n_samples = 16, 2 
+        accumulation_steps = 4             
     else: 
-        n_classes_batch, n_samples = 16, 2 # Physical Batch = 32 ảnh
-        accumulation_steps = 4             # Effective Batch = 128
-        lr_backbone, lr_head = 5e-5, 5e-4  
-
-
+        n_classes_batch, n_samples = 16, 2 
+        accumulation_steps = 4             
 
     # 🛡️ PHÂN BỔ LEARNING RATE THEO MẠNG STUDENT (Vì ta đang train Student)
     if any(x in student_name for x in super_large_backbones + large_backbones):
@@ -166,6 +162,7 @@ def train_kd_fold(args, f_idx, num_classes, df_train, df_val, df_ref, device):
 
     scaler = torch.amp.GradScaler('cuda')
     best_val_map, r1 = 0.0, 0.0
+    best_metrics = {}
 
     # ==========================================
     # 🚀 5. VÒNG LẶP HUẤN LUYỆN CHƯNG CẤT
@@ -243,18 +240,26 @@ def train_kd_fold(args, f_idx, num_classes, df_train, df_val, df_ref, device):
         scheduler.step()
 
         if (epoch % 5 == 0) or (epoch > TOTAL_EPOCHS - 10):
-            val_metrics = evaluate_retrieval(student, val_loader, device, flag_both_side=True)
-            val_map = val_metrics['mAP']
-            val_r1 = val_metrics['Rank-1']
-            print(f"📊 Epoch {epoch} mAP: {val_map:.4f} Rank-1: {val_r1}")
+            val_metrics = evaluate_retrieval(student, val_loader, device, flag_both_side=True, flag_eval_delta=True)
+            val_map = val_metrics.get('mAP(Cons)') or val_metrics['mAP'] 
+            val_r1 = val_metrics.get('Rank-1(Cons)') or val_metrics['Rank-1']
+            
+            val_map_ref = val_metrics.get('mAP(Ref)', 0.0)
+            val_map_delta = val_metrics.get('mAP(Delta)', 0.0)
+
+            print(f"📊 Epoch {epoch} mAP(Cons): {val_map:.4f} | mAP(Ref): {val_map_ref:.4f} | Delta: {val_map_delta:.4f}")
             
             if val_map > best_val_map:
                 best_val_map = val_map
                 r1 = val_r1
-                os.makedirs('weights/kd_models', exist_ok=True)
-                torch.save(student.state_dict(), f"weights/kd_models/best_{teacher_name}_kd_{student_name}_kd_type{args.kd_type}_fold{f_idx}.pth")
+                best_metrics = val_metrics
                 
-    return best_val_map, r1
+                # 🛡️ LƯU TRỌNG SỐ VỚI TÊN ĐỘNG
+                os.makedirs('weights/phase3_kd', exist_ok=True)
+                weight_filename = f"best_kd_{teacher_name}_to_{student_name}_{args.kd_type}_a{args.alpha}_t{args.temperature}_loss_{args.w_sce}_{args.w_csce}_{args.w_triplet}_{args.w_cont}_fold{f_idx}.pth"
+                torch.save(student.state_dict(), os.path.join('weights/phase3_kd', weight_filename))
+                
+    return best_val_map, r1, best_metrics
 
 def main():
     parser = argparse.ArgumentParser()
@@ -262,10 +267,19 @@ def main():
     parser.add_argument('--teacher_weight', type=str, required=True)
     parser.add_argument('--student', type=str, required=True)
     parser.add_argument('--epochs', type=int, default=60)
+    
+    # Các tham số KD
     parser.add_argument('--kd_type', type=str, default='cosine', choices=['mse', 'cosine', 'kl', 'hybrid'])
     parser.add_argument('--alpha', type=float, default=10.0)
     parser.add_argument('--temperature', type=float, default=4.0)
-    parser.add_argument('--summary_file', type=str, default='KD_Summary.txt')
+    
+    # Các trọng số Loss cho Student
+    parser.add_argument('--w_sce', type=float, default=1.0)
+    parser.add_argument('--w_csce', type=float, default=0.2)
+    parser.add_argument('--w_triplet', type=float, default=1.0)
+    parser.add_argument('--w_cont', type=float, default=1.0)
+    
+    parser.add_argument('--pipeline_name', type=str, default='KD_Experiment')
     parser.add_argument('--seed', type=int, default=42)
     
     args = parser.parse_args()
@@ -276,11 +290,9 @@ def main():
     torch.manual_seed(args.seed)
     if torch.cuda.is_available():
         torch.cuda.manual_seed(args.seed)
-        torch.cuda.manual_seed_all(args.seed)  # Nếu dùng multi-GPU
-        # Đảm bảo các phép toán của cuDNN chạy ổn định và giống hệt nhau ở mỗi lần
+        torch.cuda.manual_seed_all(args.seed)
         torch.backends.cudnn.deterministic = True
         torch.backends.cudnn.benchmark = False
-    # ==========================================
 
     os.environ["PYTORCH_CUDA_ALLOC_CONF"] = "expandable_segments:True"
     
@@ -291,16 +303,19 @@ def main():
     else: 
         device = torch.device('cpu')
 
+    # 🛡️ GỘP TẤT CẢ VÀO 1 FILE LOG DUY NHẤT VÀ TẠO HEADER RÕ RÀNG
     os.makedirs('reports_kd', exist_ok=True)
-    report_file = args.summary_file
-    report_file_path = os.path.join('reports_kd', report_file)
-    # Kiểm tra xem tạ có tồn tại không trước khi chạy
+    report_file_path = os.path.join('reports_kd', f"{args.pipeline_name}_Summary.txt")
+    
+    # Chuỗi Loss Format để in gọn gàng
+    loss_str_compact = f"{args.w_sce}/{args.w_csce}/{args.w_triplet}/{args.w_cont}"
+
     if not os.path.exists(report_file_path):
         with open(report_file_path, "w") as f:
-            f.write(f"The first time to run kD ==> create file\n")
-            f.write("="*50 + "\n")
-            f.write(f"{'Teacher'.ljust(35)} --> {'student'.ljust(35)} | {'alpha'.ljust(4)} | {'kd_type'.ljust(6)} | {'mAP'.ljust(6)} | {'Rank-1'.ljust(6)}\n")
-            f.write("-"*50 + "\n")
+            f.write(f"Knowledge Distillation Batch Experiment\n")
+            f.write("="*135 + "\n")
+            f.write(f"{'Teacher'.ljust(35)} | {'Student'.ljust(20)} | {'Alpha'.ljust(5)} | {'Temp'.ljust(4)} | {'Type'.ljust(7)} | {'Loss(S/CS/T/C)'.ljust(15)} | {'mAP(Cons)'.ljust(9)} | {'mAP(Ref)'.ljust(8)} | {'Delta'.ljust(6)}\n")
+            f.write("-" * 135 + "\n")
     
     try:
         df_all = load_epill_full_data()
@@ -315,21 +330,20 @@ def main():
         cond_ref_train = (df_all['is_ref'] == 1) & (df_all['label_idx'].isin(train_labels))
         df_train = df_all[cond_train | cond_ref_train].reset_index(drop=True)
         
-        map, r1 = train_kd_fold(args, fold, total_sub_classes, df_train, df_val, df_ref_gallery, device)
+        map, r1, best_metrics = train_kd_fold(args, fold, total_sub_classes, df_train, df_val, df_ref_gallery, device)
+        map_ref = best_metrics.get('mAP(Ref)', 0.0)
+        map_delta = best_metrics.get('mAP(Delta)', 0.0)
 
-
+        # Ghi nối dữ liệu theo chuẩn Header mới
         with open(report_file_path, "a") as f:
-            f.write(f"{args.teacher.ljust(35)} --> {args.student.ljust(35)} | {args.alpha:.4f} | {args.kd_type.ljust(6)} | {map:.4f} | {r1:.4f}\n")
+            f.write(f"{args.teacher.ljust(35)} | {args.student.ljust(20)} | {args.alpha:<5.1f} | {args.temperature:<4.1f} | {args.kd_type.ljust(7)} | {loss_str_compact.ljust(15)} | {map:.4f}    | {map_ref:.4f}   | {map_delta:.4f}\n")
             
-        
     except Exception as e:
-        # 🛡️ GHI LẠI TOÀN BỘ LỖI VÀO FILE NẾU BỊ CRASH
-        
         with open('reports_kd/KD_Crash_Traceback.txt', 'a') as f:
             f.write(f"\n{'='*50}\n")
-            f.write(f"CRASH LOG: Teacher [{args.teacher}] -> Student [{args.student}]\n")
+            f.write(f"CRASH LOG: Teacher [{args.teacher}] -> Student [{args.student}] | Loss: {loss_str_compact}\n")
             f.write(traceback.format_exc())
-        raise e # Vẫn quăng lỗi để script tổng biết mà đánh dấu FAILED
+        raise e 
 
 if __name__ == '__main__':
     main()
