@@ -7,6 +7,13 @@ from torch.utils.data import DataLoader
 from torchvision import transforms
 from tqdm import tqdm
 
+"""
+tmux new -s build_cka_matrix -d "bash -lc '
+python pipelines_selections_teacher/build_cka_matrix.py \
+|& tee -a logs/build_cka_matrix_2_$(date +%F_%H%M%S).log
+'"
+"""
+
 # Thêm root path để import được các module local (models, utils)
 sys.path.append(os.path.abspath(os.path.join(os.path.dirname(__file__), '..')))
 
